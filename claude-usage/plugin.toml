@@ -1,0 +1,153 @@
+# Claude Usage — Claude Code usage limits in the Noctalia bar.
+#
+# Architecture (mirrors noctalia/world_clock):
+#   [[service]]  owns auth + polling, publishes claude_usage.data via noctalia.state
+#   [[widget]]   thin renderer, opens the panel on click
+#   [[panel]]    detail card: per-window bars, pacing, reset countdowns, spend
+#
+# Data source: https://api.anthropic.com/api/oauth/usage — the same undocumented
+# endpoint Claude Code's own /usage view uses. It is rate limited aggressively,
+# hence the 300s floor on refresh_interval.
+
+id = "johnschmidt/claude-usage"
+name = "Claude Usage"
+version = "1.0.0"
+plugin_api = 9
+author = "johnschmidt"
+license = "MIT"
+dependencies = []
+tags = ["ai", "indicator", "productivity", "panel"]
+icon = "sparkles"
+description = "Claude Code usage limits in your bar: session, weekly and per-model windows, pacing, and extra-usage spend."
+
+[[setting]]
+key = "refresh_interval"
+type = "int"
+label_key = "settings.refresh_interval.label"
+description_key = "settings.refresh_interval.description"
+default = 300
+min = 300
+max = 3600
+step = 60
+
+[[setting]]
+key = "warn_threshold"
+type = "int"
+label_key = "settings.warn_threshold.label"
+description_key = "settings.warn_threshold.description"
+default = 70
+min = 1
+max = 100
+step = 1
+
+[[setting]]
+key = "critical_threshold"
+type = "int"
+label_key = "settings.critical_threshold.label"
+description_key = "settings.critical_threshold.description"
+default = 90
+min = 1
+max = 100
+step = 1
+
+[[setting]]
+key = "color_ok"
+type = "color"
+label_key = "settings.color_ok.label"
+default = "#a6e3a1"
+
+[[setting]]
+key = "color_warn"
+type = "color"
+label_key = "settings.color_warn.label"
+default = "#f9e2af"
+
+[[setting]]
+key = "color_critical"
+type = "color"
+label_key = "settings.color_critical.label"
+default = "#f38ba8"
+
+[[setting]]
+key = "show_pace_marker"
+type = "bool"
+label_key = "settings.show_pace_marker.label"
+description_key = "settings.show_pace_marker.description"
+default = true
+
+[[setting]]
+key = "allow_token_refresh"
+type = "bool"
+label_key = "settings.allow_token_refresh.label"
+description_key = "settings.allow_token_refresh.description"
+default = true
+advanced = true
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  [[widget.setting]]
+  key = "format"
+  type = "string"
+  label_key = "settings.format.label"
+  description_key = "settings.format.description"
+  default = "{session}% · {session_reset}"
+
+  [[widget.setting]]
+  key = "show_glyph"
+  type = "bool"
+  label_key = "settings.show_glyph.label"
+  default = true
+
+  [[widget.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  default = "sparkles"
+
+  [[widget.setting]]
+  key = "font_family"
+  type = "string"
+  label_key = "settings.font_family.label"
+  description_key = "settings.font_family.description"
+  default = ""
+
+  [[widget.setting]]
+  key = "color_by_usage"
+  type = "bool"
+  label_key = "settings.color_by_usage.label"
+  description_key = "settings.color_by_usage.description"
+  default = true
+
+  [[widget.setting]]
+  key = "source_window"
+  type = "select"
+  label_key = "settings.source_window.label"
+  description_key = "settings.source_window.description"
+  default = "session"
+  options = [
+    { value = "session", label_key = "settings.source_window.session" },
+    { value = "weekly", label_key = "settings.source_window.weekly" },
+    { value = "highest", label_key = "settings.source_window.highest" },
+  ]
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 340
+height = 452
+placement = "attached"
+position = "auto"
+open_near_click = true
+
+  [[panel.setting]]
+  key = "font_family"
+  type = "string"
+  label_key = "settings.font_family.label"
+  description_key = "settings.font_family.description"
+  default = ""
+
+[[service]]
+id = "service"
+entry = "service.luau"

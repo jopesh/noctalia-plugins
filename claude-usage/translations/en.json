@@ -1,0 +1,96 @@
+{
+  "title": "Claude Usage",
+  "time": {
+    "now": "now"
+  },
+  "window": {
+    "session": "Session",
+    "weekly": "Weekly",
+    "model_only": "{model} only",
+    "resets_in": "Resets in {time}",
+    "resets_unknown": "No reset scheduled"
+  },
+  "extra": {
+    "title": "Extra usage",
+    "limit": "Limit: {amount}"
+  },
+  "footer": {
+    "updated": "Updated {time}",
+    "never": "Not fetched yet"
+  },
+  "ui": {
+    "refresh": "Refresh now"
+  },
+  "status": {
+    "loading": "Fetching usage…",
+    "unknown": "Unknown error",
+    "offline": "Could not reach the usage API",
+    "unauthorized": "Not authorized — run claude to log in",
+    "rate_limited": "Rate limited — backing off",
+    "http_error": "Usage API returned HTTP {status}",
+    "bad_payload": "Unexpected response from the usage API",
+    "no_creds": "No credentials found — run claude to log in",
+    "bad_creds": "Credentials file is unreadable — run claude to log in",
+    "no_token": "No access token — run claude to log in",
+    "no_refresh_token": "No refresh token — run claude to log in",
+    "refresh_failed": "Token refresh failed — run claude to log in",
+    "token_expired": "Access token expired and refresh is disabled",
+    "creds_write_failed": "Refreshed the token but could not save it to ~/.claude/.credentials.json"
+  },
+  "settings": {
+    "refresh_interval": {
+      "label": "Refresh interval (seconds)",
+      "description": "How often to poll the usage API. The endpoint rate-limits aggressively, so 300s is the minimum."
+    },
+    "warn_threshold": {
+      "label": "Warning threshold (%)",
+      "description": "Usage at or above this switches bars and the bar widget to the warning colour."
+    },
+    "critical_threshold": {
+      "label": "Critical threshold (%)",
+      "description": "Usage at or above this switches bars and the bar widget to the critical colour."
+    },
+    "color_ok": {
+      "label": "Normal colour"
+    },
+    "color_warn": {
+      "label": "Warning colour"
+    },
+    "color_critical": {
+      "label": "Critical colour"
+    },
+    "font_family": {
+      "label": "Panel font",
+      "description": "Font for all text in the panel. An installed family name (e.g. \"JetBrainsMono NFM\") or a path to a .ttf/.otf file. Leave empty to use the shell font."
+    },
+    "show_pace_marker": {
+      "label": "Show pacing marker",
+      "description": "Draw a marker in each bar at the point you'd be at if you spread usage evenly across the window."
+    },
+    "allow_token_refresh": {
+      "label": "Refresh expired tokens",
+      "description": "Renew the OAuth access token and write it back to ~/.claude/.credentials.json when it expires. Disable to keep the plugin strictly read-only."
+    },
+    "format": {
+      "label": "Bar format",
+      "description": "Placeholders: {pct} {reset} {pace} {session} {session_reset} {weekly} {weekly_reset} {plan} {spend}"
+    },
+    "show_glyph": {
+      "label": "Show glyph"
+    },
+    "glyph": {
+      "label": "Glyph"
+    },
+    "color_by_usage": {
+      "label": "Colour by usage",
+      "description": "Tint the glyph using the warning and critical thresholds."
+    },
+    "source_window": {
+      "label": "Bar window",
+      "description": "Which limit window the {pct}, {reset} and {pace} placeholders track.",
+      "session": "Session (5 hour)",
+      "weekly": "Weekly",
+      "highest": "Highest usage"
+    }
+  }
+}
