@@ -111,20 +111,29 @@ end
 
 -- Actual usage minus elapsed time in the window: positive means burning faster
 -- than the window refills.
+-- Mirrors panel.luau's elapsedPct + arrow pair: the same windowSecs <= 0 guard
+-- (0 would divide to nan), the same show_pace_marker opt-out, and the same two
+-- symbols — nothing at parity, since a third arrow the panel never draws would
+-- contradict the README.
 local function paceIndicator(window)
+  if cfg("show_pace_marker", true) == false then
+    return ""
+  end
   if window == nil or type(window.resetsAt) ~= "number" or type(window.windowSecs) ~= "number" then
     return ""
   end
+  if window.windowSecs <= 0 then
+    return ""
+  end
   local remaining = window.resetsAt - os.time()
-  local elapsed = math.floor((window.windowSecs - remaining) * 100 / window.windowSecs)
-  elapsed = math.clamp(elapsed, 0, 100)
+  local elapsed = math.clamp(math.floor((window.windowSecs - remaining) * 100 / window.windowSecs), 0, 100)
   local delta = (window.pct or 0) - elapsed
   if delta > 0 then
     return "↑"
   elseif delta < 0 then
     return "↓"
   end
-  return "→"
+  return ""
 end
 
 local function placeholders(source)

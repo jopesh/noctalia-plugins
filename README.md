@@ -33,8 +33,10 @@ noctalia msg plugins list
 # Official offline linter: cross-checks getConfig() calls against declared settings
 noctalia plugins lint claude-usage
 
-# Community-repo manifest/README validator (only needed before publishing)
-python3 validate-plugins.py --root .
+# Community-repo manifest/README validator (only needed before publishing).
+# The script lives in the official-plugins repo, not here — fetch it first:
+git clone --depth 1 https://github.com/noctalia-dev/official-plugins /tmp/official-plugins
+python3 /tmp/official-plugins/.github/workflows/validate-plugins.py --root .
 ```
 
 The community validator also wants a `thumbnail.webp` per plugin — that's a

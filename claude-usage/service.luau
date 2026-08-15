@@ -47,22 +47,35 @@ local MAX_SCOPED = 4 -- a hostile payload must not grow the panel without bound
 
 local MONEY_SYMBOLS = { USD = "$", EUR = "€", GBP = "£", JPY = "¥", CAD = "$", AUD = "$" }
 
--- Failure kinds that mean "the request never got an answer". claudebar keeps
--- these quiet — no marker, no notification — because they resolve themselves;
--- everything else is a state you can act on and is reported loudly.
-local TRANSIENT_KINDS = { network = true, timeout = true }
-
--- Failure kinds that need you to run `claude`. Worth one desktop notification
--- per episode: nothing on screen will change until you do something.
-local AUTH_KINDS = {
-  auth = true,
-  no_creds = true,
-  bad_creds = true,
-  no_token = true,
-  no_refresh_token = true,
-  refresh_failed = true,
-  token_expired = true,
+-- Every failure kind the service can publish, classified once:
+--
+--   transient — the request never got an answer. claudebar keeps these quiet
+--               (no marker, no notification) because they resolve themselves,
+--               and they are the only kind that earns the quick first retry.
+--   notify    — needs you to run `claude`. Nothing on screen will change until
+--               you do, so it is worth one desktop notification per episode.
+--               Deliberately false for rate_limited/http/parse: those are shown
+--               in the panel but clear up on their own, so a popup is noise.
+--   key       — translation key for the message.
+--
+-- A kind not listed here degrades to a non-transient, non-notifying "unknown"
+-- rather than silently producing a missing translation.
+local ERROR_KINDS = {
+  network = { transient = true, notify = false, key = "status.offline" },
+  timeout = { transient = true, notify = false, key = "status.timed_out" },
+  rate_limited = { transient = false, notify = false, key = "status.rate_limited" },
+  http = { transient = false, notify = false, key = "status.http_error" },
+  parse = { transient = false, notify = false, key = "status.bad_payload" },
+  auth = { transient = false, notify = true, key = "status.unauthorized" },
+  no_creds = { transient = false, notify = true, key = "status.no_creds" },
+  bad_creds = { transient = false, notify = true, key = "status.bad_creds" },
+  no_token = { transient = false, notify = true, key = "status.no_token" },
+  no_refresh_token = { transient = false, notify = true, key = "status.no_refresh_token" },
+  refresh_failed = { transient = false, notify = true, key = "status.refresh_failed" },
+  token_expired = { transient = false, notify = true, key = "status.token_expired" },
 }
+
+local UNKNOWN_KIND = { transient = false, notify = false, key = "status.unknown" }
 
 local data = { status = "loading", stale = false, windows = {} }
 local nextFetchAt = 0
@@ -90,7 +103,11 @@ local function str(value)
   return nil
 end
 
-local function pct(value)
+-- Reads a percentage out of an untrusted payload: rounds to a whole number and
+-- floors at 0. Values above 100 are *kept* — going over a limit is a real state
+-- worth showing — so the upper test is only a sanity clamp on absurd numbers,
+-- not a cap at full.
+local function toPercent(value)
   local n = num(value)
   if n == nil then
     return nil
@@ -202,18 +219,23 @@ local function publish()
   noctalia.state.set("claude_usage.data", data)
 end
 
+-- `message` is only passed when the text needs substitutions the table can't
+-- carry (the HTTP status); otherwise it comes from the kind's own key, so a
+-- kind can never be paired with another kind's message.
 local function setError(kind, message)
-  local transient = TRANSIENT_KINDS[kind] == true
+  local spec = ERROR_KINDS[kind] or UNKNOWN_KIND
+  local text = message or noctalia.tr(spec.key)
+
   data.status = "error"
-  data.error = { kind = kind, message = message, transient = transient }
+  data.error = { kind = kind, message = text, transient = spec.transient }
   -- Keep the last known windows around and flag them, so a transient network
   -- blip degrades to "stale numbers + a warning" rather than an empty panel.
   data.stale = #data.windows > 0
   publish()
 
-  if AUTH_KINDS[kind] == true and not notifiedAuth then
+  if spec.notify and not notifiedAuth then
     notifiedAuth = true
-    noctalia.notifyError(noctalia.tr("title"), message)
+    noctalia.notifyError(noctalia.tr("title"), text)
   end
 end
 
@@ -294,7 +316,12 @@ local function writeCreds(root, accessToken, refreshToken, expiresAt, done)
 
   local tmp = CREDS .. ".noctalia.tmp"
   noctalia.writeFile(tmp, "")
-  noctalia.runAsync({ "chmod", "600", tmp }, function(result)
+  -- String form, not an argv table: the table form of runAsync needs
+  -- plugin_api >= 24 and this plugin targets 9, where the host rejects it
+  -- outright ("string expected, got table") and the callback never fires — which
+  -- silently left the refreshed token unwritten. Quote the path for /bin/sh.
+  local quoted = "'" .. tmp:gsub("'", "'\\''") .. "'"
+  noctalia.runAsync("chmod 600 " .. quoted, function(result)
     if result == nil or result.exitCode ~= 0 then
       noctalia.removeFile(tmp)
       done(false)
@@ -343,7 +370,15 @@ local function refreshAccessToken(root, cb)
     },
     body = body,
   }, function(res)
-    if res == nil or not res.ok or res.status ~= 200 or str(res.body) == nil then
+    -- Split the way claudebar does: no HTTP response at all (its `_http_code
+    -- == "000"`) is a network blip that fixes itself, so it must not raise the
+    -- "run claude to log in" notification. Only a real 4xx/5xx from the token
+    -- endpoint means the refresh token is actually spent.
+    if res == nil or not res.ok then
+      cb(nil, "network")
+      return
+    end
+    if res.status ~= 200 or str(res.body) == nil then
       cb(nil, "refresh_failed")
       return
     end
@@ -438,7 +473,7 @@ local function legacyWindow(node, id, windowSecs)
   if type(node) ~= "table" then
     return nil
   end
-  local value = pct(node.utilization)
+  local value = toPercent(node.utilization)
   if value == nil then
     return nil
   end
@@ -454,7 +489,7 @@ local function buildWindows(payload)
   if type(payload.limits) == "table" then
     for _, limit in ipairs(payload.limits) do
       if type(limit) == "table" then
-        local value = pct(limit.percent) or 0
+        local value = toPercent(limit.percent) or 0
         local resetsAt = parseIso(limit.resets_at)
         if limit.kind == "weekly_scoped" and #scoped < MAX_SCOPED then
           local model = nil
@@ -514,9 +549,9 @@ local function spendEntry(used, limit, currency, exponent, rawPercent)
   if used <= 0 and (limit == nil or limit <= 0) then
     return nil
   end
-  local percent = pct(rawPercent)
+  local percent = toPercent(rawPercent)
   if percent == nil and limit ~= nil and limit > 0 then
-    percent = pct(used / limit * 100)
+    percent = toPercent(used / limit * 100)
   end
   return {
     pct = percent or 0,
@@ -575,9 +610,19 @@ local function scheduleNext(ok, retryAfter)
   -- deadline budget, so a start that lost the race with the network recovers in
   -- seconds. The equivalent here is one quick retry before the exponential
   -- backoff takes over; from the second failure on, the old schedule applies.
-  local delay = FIRST_RETRY
-  if failures > 1 then
-    delay = interval() * math.min(2 ^ (failures - 2), 8)
+  --
+  -- Only transient kinds get it: claudebar's retry loop spins on "no HTTP
+  -- response" and breaks out immediately on a 4xx/5xx, because a bad token or a
+  -- server error cannot fix itself in 15s and re-asking only feeds the 429s.
+  local transient = data.error ~= nil and data.error.transient == true
+  local delay
+  if transient and failures == 1 then
+    delay = FIRST_RETRY
+  else
+    -- The quick retry doesn't consume a rung of the ladder, so a transient
+    -- failure still starts the exponential run at one full interval.
+    local steps = transient and failures - 1 or failures
+    delay = interval() * math.min(2 ^ (steps - 1), 8)
   end
   -- `retryAfter` is a floor asked for by the caller (a 429), and it outranks the
   -- general cap: waiting longer than MAX_BACKOFF beats knocking on a shut door.
@@ -592,13 +637,13 @@ local function onUsageResponse(res, root)
   inFlight = false
 
   if res == nil or not res.ok then
-    setError("network", noctalia.tr("status.offline"))
+    setError("network")
     scheduleNext(false)
     return
   end
 
   if res.status == 401 or res.status == 403 then
-    setError("auth", noctalia.tr("status.unauthorized"))
+    setError("auth")
     scheduleNext(false)
     return
   end
@@ -609,7 +654,7 @@ local function onUsageResponse(res, root)
     -- the server's own pace is invisible. Doubling per consecutive 429 gets us
     -- to that order of magnitude without polling a door that's shut.
     rateLimited += 1
-    setError("rate_limited", noctalia.tr("status.rate_limited"))
+    setError("rate_limited")
     scheduleNext(false, math.min(RATE_LIMIT_BACKOFF * 2 ^ (rateLimited - 1), RATE_LIMIT_MAX))
     return
   end
@@ -622,14 +667,14 @@ local function onUsageResponse(res, root)
 
   local payload = noctalia.json.decode(res.body)
   if type(payload) ~= "table" then
-    setError("parse", noctalia.tr("status.bad_payload"))
+    setError("parse")
     scheduleNext(false)
     return
   end
 
   local windows = buildWindows(payload)
   if #windows == 0 then
-    setError("parse", noctalia.tr("status.bad_payload"))
+    setError("parse")
     scheduleNext(false)
     return
   end
@@ -664,7 +709,7 @@ local function fetch()
 
     if token == nil then
       inFlight = false
-      setError(err or "auth", noctalia.tr("status." .. (err or "no_token")))
+      setError(err or "no_token")
       scheduleNext(false)
       return
     end
@@ -700,8 +745,6 @@ local function forceRefresh()
     return
   end
 
-  failures = 0
-
   -- The endpoint 429s aggressively, and a refresh button invites clicking. Hold
   -- repeat requests to one per MANUAL_MIN_GAP — claudebar's cache TTL does the
   -- same for its signal-triggered re-runs — but keep the intent: the request
@@ -714,6 +757,10 @@ local function forceRefresh()
     return
   end
 
+  -- Only reset the ladder for a click that actually sends a request. Clearing it
+  -- on suppressed clicks would let repeated clicking during an outage pin the
+  -- delay at its first rung instead of letting it grow toward MAX_BACKOFF.
+  failures = 0
   nextFetchAt = 0
   -- A manual refresh must never be eaten by a request that may never answer.
   abandonInFlight()
@@ -731,7 +778,7 @@ function update()
       return
     end
     abandonInFlight()
-    setError("timeout", noctalia.tr("status.timed_out"))
+    setError("timeout")
     scheduleNext(false)
     return
   end
