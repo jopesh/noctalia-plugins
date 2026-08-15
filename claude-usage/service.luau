@@ -2,10 +2,15 @@
 -- Claude Usage service — owns credentials, polling and parsing.
 --
 -- Publishes:  claude_usage.data = {
---   status, error, stale, plan, fetchedAt,
+--   status, stale, plan, fetchedAt,
+--   error   = { kind, message, transient } | nil,
 --   windows = { { id, pct, resetsAt, windowSecs }, ... },
 --   spend   = { pct, usedText, limitText } | nil,
 -- }
+--
+-- `error.transient` marks a request that never got an answer. Those resolve on
+-- their own, so renderers keep quiet about them — the stale marker is signal
+-- enough — and shout only about states you have to act on.
 -- Commands:  claude_usage.cmd = { op = "refresh" }
 -- IPC:       refresh
 --
@@ -29,7 +34,12 @@ local CREDS = noctalia.expandPath("~/.claude/.credentials.json")
 local REFRESH_BUFFER = 300 -- refresh the access token 5 min before it expires
 local MIN_INTERVAL = 300 -- /usage rate-limits hard below this
 local MAX_BACKOFF = 1800
+local RATE_LIMIT_BACKOFF = 600 -- first 429; doubles per consecutive 429
+local RATE_LIMIT_MAX = 3600 -- observed Retry-After runs to ~59 min
 local TICK_MS = 5000
+local FETCH_TIMEOUT = 60 -- give up on a request whose callback never arrives
+local FIRST_RETRY = 15 -- a lost network race at login shouldn't cost a full interval
+local MANUAL_MIN_GAP = 60 -- claudebar's CACHE_TTL: a floor under repeated manual refreshes
 
 local SESSION_WINDOW = 5 * 3600
 local WEEKLY_WINDOW = 7 * 86400
@@ -37,11 +47,32 @@ local MAX_SCOPED = 4 -- a hostile payload must not grow the panel without bound
 
 local MONEY_SYMBOLS = { USD = "$", EUR = "€", GBP = "£", JPY = "¥", CAD = "$", AUD = "$" }
 
+-- Failure kinds that mean "the request never got an answer". claudebar keeps
+-- these quiet — no marker, no notification — because they resolve themselves;
+-- everything else is a state you can act on and is reported loudly.
+local TRANSIENT_KINDS = { network = true, timeout = true }
+
+-- Failure kinds that need you to run `claude`. Worth one desktop notification
+-- per episode: nothing on screen will change until you do something.
+local AUTH_KINDS = {
+  auth = true,
+  no_creds = true,
+  bad_creds = true,
+  no_token = true,
+  no_refresh_token = true,
+  refresh_failed = true,
+  token_expired = true,
+}
+
 local data = { status = "loading", stale = false, windows = {} }
 local nextFetchAt = 0
 local inFlight = false
+local fetchStartedAt = 0 -- last request start: drives the watchdog and the manual floor
+local attempt = 0 -- bumped per request; a reply from an older one is dropped
 local failures = 0
+local rateLimited = 0 -- consecutive 429s
 local warnedCredsWrite = false
+local notifiedAuth = false
 
 -- ---------------------------------------------------------------- utilities
 
@@ -172,12 +203,18 @@ local function publish()
 end
 
 local function setError(kind, message)
+  local transient = TRANSIENT_KINDS[kind] == true
   data.status = "error"
-  data.error = { kind = kind, message = message }
+  data.error = { kind = kind, message = message, transient = transient }
   -- Keep the last known windows around and flag them, so a transient network
   -- blip degrades to "stale numbers + a warning" rather than an empty panel.
   data.stale = #data.windows > 0
   publish()
+
+  if AUTH_KINDS[kind] == true and not notifiedAuth then
+    notifiedAuth = true
+    noctalia.notifyError(noctalia.tr("title"), message)
+  end
 end
 
 -- ------------------------------------------------------------------- cache
@@ -534,11 +571,21 @@ local function scheduleNext(ok, retryAfter)
   end
 
   failures += 1
-  local delay = interval() * math.min(2 ^ (failures - 1), 8)
-  if retryAfter ~= nil then
-    delay = math.max(delay, retryAfter)
+  -- claudebar retries a transient failure inside its own run, on a short
+  -- deadline budget, so a start that lost the race with the network recovers in
+  -- seconds. The equivalent here is one quick retry before the exponential
+  -- backoff takes over; from the second failure on, the old schedule applies.
+  local delay = FIRST_RETRY
+  if failures > 1 then
+    delay = interval() * math.min(2 ^ (failures - 2), 8)
   end
-  nextFetchAt = now + math.min(delay, MAX_BACKOFF)
+  -- `retryAfter` is a floor asked for by the caller (a 429), and it outranks the
+  -- general cap: waiting longer than MAX_BACKOFF beats knocking on a shut door.
+  local wait = math.min(delay, MAX_BACKOFF)
+  if retryAfter ~= nil and retryAfter > wait then
+    wait = retryAfter
+  end
+  nextFetchAt = now + wait
 end
 
 local function onUsageResponse(res, root)
@@ -557,8 +604,13 @@ local function onUsageResponse(res, root)
   end
 
   if res.status == 429 then
+    -- The endpoint answers 429 with a Retry-After of the better part of an hour,
+    -- but noctalia.http hands back only { ok, status, body } — no headers — so
+    -- the server's own pace is invisible. Doubling per consecutive 429 gets us
+    -- to that order of magnitude without polling a door that's shut.
+    rateLimited += 1
     setError("rate_limited", noctalia.tr("status.rate_limited"))
-    scheduleNext(false, 600)
+    scheduleNext(false, math.min(RATE_LIMIT_BACKOFF * 2 ^ (rateLimited - 1), RATE_LIMIT_MAX))
     return
   end
 
@@ -585,6 +637,8 @@ local function onUsageResponse(res, root)
   data.status = "ok"
   data.error = nil
   data.stale = false
+  rateLimited = 0
+  notifiedAuth = false -- a success ends the episode; the next break notifies again
   data.plan = planLabel(root) or data.plan
   data.fetchedAt = os.time()
   data.windows = windows
@@ -599,8 +653,15 @@ local function fetch()
     return
   end
   inFlight = true
+  fetchStartedAt = os.time()
+  attempt += 1
+  local ticket = attempt
 
   withToken(function(token, err, root)
+    if ticket ~= attempt then
+      return -- abandoned by the watchdog or a manual refresh
+    end
+
     if token == nil then
       inFlight = false
       setError(err or "auth", noctalia.tr("status." .. (err or "no_token")))
@@ -617,21 +678,65 @@ local function fetch()
         "Accept: application/json",
       },
     }, function(res)
+      if ticket ~= attempt then
+        return
+      end
       onUsageResponse(res, root)
     end)
   end)
 end
 
+-- Drop the request in flight, if any, so the next fetch() isn't swallowed. The
+-- bumped ticket turns a late reply into a no-op.
+local function abandonInFlight()
+  attempt += 1
+  inFlight = false
+end
+
 local function forceRefresh()
+  -- While the endpoint is actively rate-limiting us, a click can only make it
+  -- worse, so the backoff wins over the button.
+  if data.error ~= nil and data.error.kind == "rate_limited" and os.time() < nextFetchAt then
+    return
+  end
+
   failures = 0
+
+  -- The endpoint 429s aggressively, and a refresh button invites clicking. Hold
+  -- repeat requests to one per MANUAL_MIN_GAP — claudebar's cache TTL does the
+  -- same for its signal-triggered re-runs — but keep the intent: the request
+  -- goes out as soon as the gap is up rather than being dropped.
+  local earliest = fetchStartedAt + MANUAL_MIN_GAP
+  if os.time() < earliest then
+    if nextFetchAt > earliest then
+      nextFetchAt = earliest -- pull the schedule in, but never past the floor
+    end
+    return
+  end
+
   nextFetchAt = 0
+  -- A manual refresh must never be eaten by a request that may never answer.
+  abandonInFlight()
   fetch()
 end
 
 -- ---------------------------------------------------------------- lifecycle
 
 function update()
-  if inFlight or os.time() < nextFetchAt then
+  if inFlight then
+    -- A callback that never arrives (a dropped HTTP reply, an unanswered token
+    -- refresh) would otherwise pin inFlight forever: no retry, no error, and the
+    -- widget sitting on yesterday's numbers as if they were current.
+    if os.time() - fetchStartedAt < FETCH_TIMEOUT then
+      return
+    end
+    abandonInFlight()
+    setError("timeout", noctalia.tr("status.timed_out"))
+    scheduleNext(false)
+    return
+  end
+
+  if os.time() < nextFetchAt then
     return
   end
   fetch()

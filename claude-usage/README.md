@@ -121,6 +121,44 @@ exponentially (up to 30 min) and the last good payload is cached in the
 plugin's data dir, so a restart or a network blip shows stale numbers rather
 than an empty widget.
 
+### Stale data
+
+Whenever the numbers on screen aren't from the latest fetch — the cache after a
+shell restart, a failed request, an expired login — the widget dims them and
+appends a `⏸` marker, and the panel footer says when they are from and how old
+they are (`Stale — data from 22:28 (14 h ago)`) instead of `Updated 22:28`.
+That's the state to expect after a night away from Claude Code until the next
+successful fetch lands.
+
+A request whose reply never arrives (typically the token refresh fired at shell
+start, before the network is up) is abandoned after 60s so polling resumes; a
+late reply for an abandoned request is ignored. Without that, one hung request
+at login pinned the widget on the previous day's numbers indefinitely.
+
+Failures are told apart the way claudebar tells them apart:
+
+- **A request that got no answer** (offline, hung, abandoned) stays quiet. The
+  numbers go stale and the footer reads `Waiting for network — data from …`;
+  there is no error banner, because it resolves itself. The first retry is 15s
+  later, so a shell that started before the network was up catches up in
+  seconds instead of at the next 300s tick.
+- **Anything you have to act on** (401/403, HTTP errors, an unusable
+  credentials file, a failed token refresh) gets the red banner, and the
+  auth-class failures also raise one desktop notification per episode — nothing
+  on screen will change until you run `claude`. A successful fetch ends the
+  episode, so the next break notifies again.
+
+Manual refreshes — the panel button, right-click, `noctalia msg plugin
+johnschmidt/claude-usage:service all refresh` — are held to one request per 60s,
+matching claudebar's cache TTL. A click inside that window isn't dropped; it
+brings the next fetch forward to the earliest allowed moment.
+
+An HTTP 429 backs off on its own ladder: 10 min, doubling per consecutive 429,
+up to an hour, and the button is ignored entirely until that passes. The
+endpoint's `Retry-After` has been observed at ~59 minutes, but `noctalia.http`
+returns only `{ ok, status, body }` — no headers — so the server's own number
+can't be read and the ladder approximates it.
+
 ### Token refresh
 
 When the access token is within 5 minutes of expiry the service refreshes it

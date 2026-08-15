@@ -14,8 +14,18 @@
     "title": "Extra usage",
     "limit": "Limit: {amount}"
   },
+  "age": {
+    "now": "just now",
+    "minutes": "{count} min ago",
+    "hours": "{count} h ago",
+    "days": "{count} d ago"
+  },
   "footer": {
     "updated": "Updated {time}",
+    "stale": "Stale — data from {time}",
+    "stale_age": "Stale — data from {time} ({age})",
+    "waiting": "Waiting for network — data from {time}",
+    "waiting_age": "Waiting for network — data from {time} ({age})",
     "never": "Not fetched yet"
   },
   "ui": {
@@ -27,6 +37,7 @@
     "offline": "Could not reach the usage API",
     "unauthorized": "Not authorized — run claude to log in",
     "rate_limited": "Rate limited — backing off",
+    "timed_out": "The usage API did not answer — retrying",
     "http_error": "Usage API returned HTTP {status}",
     "bad_payload": "Unexpected response from the usage API",
     "no_creds": "No credentials found — run claude to log in",

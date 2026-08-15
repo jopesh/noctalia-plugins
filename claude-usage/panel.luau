@@ -219,8 +219,10 @@ local function spendSection()
   return ui.column({ key = "spend", gap = 5, align = "stretch" }, rows)
 end
 
+-- Only states you can act on get the banner. A request that never got an answer
+-- resolves itself, and says so in the footer instead.
 local function errorBanner()
-  if data.error == nil then
+  if data.error == nil or data.error.transient then
     return nil
   end
   return ui.row({
@@ -237,17 +239,54 @@ local function errorBanner()
   })
 end
 
+-- How old the displayed numbers are, in claudebar's wording. Negative ages
+-- (clock skew) return nil and the caller drops the parenthetical.
+local function relAge(seconds)
+  if seconds < 0 then
+    return nil
+  end
+  if seconds < 60 then
+    return noctalia.tr("age.now")
+  end
+  if seconds < 3600 then
+    return noctalia.tr("age.minutes", { count = tostring(math.floor(seconds / 60)) })
+  end
+  if seconds < 86400 then
+    return noctalia.tr("age.hours", { count = tostring(math.floor(seconds / 3600)) })
+  end
+  return noctalia.tr("age.days", { count = tostring(math.floor(seconds / 86400)) })
+end
+
 local function footer()
+  local fetchedAt = type(data.fetchedAt) == "number" and data.fetchedAt or nil
+  local glyph = "clock"
+  local color = "on_surface_variant"
   local text
-  if type(data.fetchedAt) == "number" then
-    text = noctalia.tr("footer.updated", { time = noctalia.formatTime("%H:%M", data.fetchedAt) })
-  else
+
+  if fetchedAt == nil then
     text = noctalia.tr("footer.never")
+  elseif data.stale then
+    -- Say when the numbers are from and how old they are: a stale panel that
+    -- only dims its text looks identical to a fresh one at a glance.
+    glyph = "player-pause"
+    color = cfg("color_warn", "#f9e2af")
+    local age = relAge(os.time() - fetchedAt)
+    local time = noctalia.formatTime("%H:%M", fetchedAt)
+    -- "Waiting" while a request is still going unanswered, "Stale" once the
+    -- reason is something you have to fix.
+    local waiting = data.error ~= nil and data.error.transient
+    local key = waiting and "footer.waiting" or "footer.stale"
+    if age ~= nil then
+      key ..= "_age"
+    end
+    text = noctalia.tr(key, { time = time, age = age })
+  else
+    text = noctalia.tr("footer.updated", { time = noctalia.formatTime("%H:%M", fetchedAt) })
   end
 
   return ui.row({ gap = 5, align = "center" }, {
-    ui.glyph({ name = "clock", size = 11, color = "on_surface_variant" }),
-    label({ text = text, fontSize = 11, color = "on_surface_variant", flexGrow = 1 }),
+    ui.glyph({ name = glyph, size = 11, color = color }),
+    label({ text = text, fontSize = 11, color = color, flexGrow = 1 }),
     ui.button({
       glyph = "refresh",
       glyphSize = 12,

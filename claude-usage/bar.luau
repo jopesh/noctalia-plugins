@@ -148,7 +148,12 @@ local function render()
 
   local children = {}
 
-  if data.status == "error" and (data.windows == nil or #data.windows == 0) then
+  -- A hard error with nothing to show is worth a warning capsule. A transient
+  -- one isn't: it will clear itself, so fall through to the neutral 0% readout
+  -- rather than crying wolf every time the network hiccups at login.
+  local hardError = data.error ~= nil and not data.error.transient
+
+  if hardError and (data.windows == nil or #data.windows == 0) then
     table.insert(children, ui.glyph({ name = "alert-triangle", size = 14, color = "error" }))
     table.insert(children, ui.label({ text = noctalia.tr("title"), fontFamily = fontFamily, color = "error" }))
   else
@@ -175,6 +180,16 @@ local function render()
       fontFamily = fontFamily,
       color = data.stale and "on_surface_variant" or "on_surface",
     }))
+
+    -- Dimming alone reads as a theme quirk, not as "these numbers are old", so
+    -- stale data also gets claudebar's ⏸ marker. The panel footer says how old.
+    if data.stale then
+      table.insert(children, ui.glyph({
+        name = "player-pause",
+        size = 12,
+        color = cfg("color_warn", "#f9e2af"),
+      }))
+    end
   end
 
   local container = barWidget.isVertical() and ui.column or ui.row
