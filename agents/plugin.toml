@@ -1,0 +1,121 @@
+# Agents — one bar icon and one panel for every AI coding subscription on the
+# machine. A port of omarchy's Quickshell `agents` plugin
+# (basecamp/omarchy @ quattro, shell/plugins/agents) to Noctalia.
+#
+# Architecture (mirrors upstream's Main.qml / Panel.qml split):
+#   bin/         the collectors — one JSON record per agent, vendored from
+#                omarchy's bin/omarchy-agent-usage-*
+#   [[service]]  discovers and watches those records, runs the collectors on a
+#                timer, merges synced snapshots, publishes agents.data
+#   [[widget]]   the bar icon; hides itself when no agent has usage to show
+#   [[panel]]    the dashboard: limits, balance, tokens by day, tokens by model
+#
+# The plugin never learns how the numbers were made: a record that appears in
+# the usage directory is an agent, whoever wrote it. Adding one is adding a
+# collector to bin/ — no change here, and the panel gains a tab.
+
+id = "johnschmidt/agents"
+name = "Agents"
+version = "1.0.0"
+plugin_api = 23
+author = "johnschmidt"
+license = "MIT"
+dependencies = []
+tags = ["ai", "indicator", "productivity", "panel"]
+icon = "robot"
+description = "Claude Code, Codex and Fireworks usage, limits and history in one bar panel."
+
+[[setting]]
+key = "refresh_interval"
+type = "int"
+label_key = "settings.refresh_interval.label"
+description_key = "settings.refresh_interval.description"
+default = 900
+min = 30
+max = 3600
+step = 30
+
+[[setting]]
+key = "disabled_agents"
+type = "string_list"
+label_key = "settings.disabled_agents.label"
+description_key = "settings.disabled_agents.description"
+default = []
+
+[[setting]]
+key = "launch_command"
+type = "string"
+label_key = "settings.launch_command.label"
+description_key = "settings.launch_command.description"
+default = "claude"
+
+[[setting]]
+key = "sync_enabled"
+type = "bool"
+label_key = "settings.sync_enabled.label"
+description_key = "settings.sync_enabled.description"
+default = false
+
+[[setting]]
+key = "sync_dir"
+type = "folder"
+label_key = "settings.sync_dir.label"
+description_key = "settings.sync_dir.description"
+default = ""
+
+[[setting]]
+key = "sync_file_name"
+type = "string"
+label_key = "settings.sync_file_name.label"
+description_key = "settings.sync_file_name.description"
+default = ""
+advanced = true
+
+[[setting]]
+key = "sync_device_id"
+type = "string"
+label_key = "settings.sync_device_id.label"
+description_key = "settings.sync_device_id.description"
+default = ""
+advanced = true
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  # Every widget gets a built-in `middle = "settings-open-widget"`, which would
+  # swallow onMiddleClick. Upstream binds middle to "next subscription", so the
+  # button has to be freed here; users can rebind it per instance.
+  [widget.actions]
+  middle = "none"
+
+  [[widget.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  description_key = "settings.glyph.description"
+  default = "robot"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 360
+height = 620
+placement = "attached"
+position = "auto"
+open_near_click = true
+keyboard_focus = "on_demand"
+# h / l switch subscription, r or Enter refresh. Escape is deliberately absent:
+# the host keeps it, so the panel can never capture its own dismissal.
+capture_keys = ["h", "l", "r", "Return"]
+
+  [[panel.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  description_key = "settings.glyph.description"
+  default = "robot"
+
+[[service]]
+id = "service"
+entry = "service.luau"

@@ -5,6 +5,12 @@ Personal [Noctalia](https://noctalia.dev) plugin source.
 | Plugin | What it does |
 | --- | --- |
 | [`claude-usage`](claude-usage/) | Claude Code usage limits in the bar — session, weekly and per-model windows, pacing, reset countdowns, and extra-usage spend |
+| [`agents`](agents/) | One bar icon and one panel for every AI coding subscription — limits, prepaid balance, tokens by day and by model. A port of [omarchy's Quickshell `agents` plugin](https://github.com/basecamp/omarchy/tree/quattro/shell/plugins/agents) |
+
+Both read Anthropic's OAuth usage endpoint, so running both doubles the request
+rate against an endpoint that rate-limits hard. They are otherwise independent:
+separate state keys, separate data directories, and either can sit in the bar
+without the other.
 
 ## Layout
 
@@ -19,6 +25,11 @@ location = "~/Developer/claude-noctalia"
 name = "my-plugins"
 ```
 
+`plugin_api` is a *maximum*, not a minimum: a manifest above what the installed
+shell supports loads as `disabled incompatible`. noctalia 5.0.0-beta.8 tops out
+at 23 — notably one short of the argv-table form of `runAsync` (24), so
+subprocess arguments still have to be shell-quoted by hand.
+
 Entry scripts hot-reload on save. Manifest (`plugin.toml`) changes need a
 config reload:
 
@@ -31,7 +42,7 @@ noctalia msg plugins list
 
 ```sh
 # Official offline linter: cross-checks getConfig() calls against declared settings
-noctalia plugins lint claude-usage
+noctalia plugins lint .
 
 # Community-repo manifest/README validator (only needed before publishing).
 # The script lives in the official-plugins repo, not here — fetch it first:

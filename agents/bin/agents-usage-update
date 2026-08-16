@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# Regenerate the AI agent usage data files.
+#
+# Each agents-usage-<agent> collector prints one display-ready JSON record;
+# this writes them to the usage directory where service.luau watches them.
+# Adding an agent is adding a collector — the plugin picks up any record that
+# appears here, so nothing else has to change.
+#
+# Usage: agents-usage-update [--force] [--limits-only] [--dir <path>]
+#                            [--except <agent>]... [agent...]
+
+USAGE_DIR="${NOCTALIA_AGENTS_USAGE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/noctalia-agents/usage}"
+BIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+flags=()
+only=()
+declare -A excluded
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --force | --limits-only) flags+=("$1") ;;
+  --dir)
+    USAGE_DIR="$2"
+    shift
+    ;;
+  --except)
+    excluded[$2]=1
+    shift
+    ;;
+  *) only+=("$1") ;;
+  esac
+  shift
+done
+
+mkdir -p "$USAGE_DIR" || exit 1
+
+wanted() {
+  local agent="$1"
+  [[ -n ${excluded[$agent]} ]] && return 1
+  ((${#only[@]} == 0)) && return 0
+  local candidate
+  for candidate in "${only[@]}"; do
+    [[ $candidate == "$agent" ]] && return 0
+  done
+  return 1
+}
+
+# A collector that fails leaves the previous record in place: stale numbers with
+# the panel's own "updated" line beat an empty panel.
+collect() {
+  local collector="$1" agent="$2"
+  local record tmp
+  if ! record=$("$collector" "${flags[@]}") || [[ -z $record ]] ||
+    ! python3 -c 'import json,sys; json.load(sys.stdin)' <<<"$record" 2>/dev/null; then
+    echo "agents-usage-update: $agent collector failed" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$USAGE_DIR/.$agent.XXXXXX") || return 1
+  printf '%s\n' "$record" >"$tmp"
+  mv "$tmp" "$USAGE_DIR/$agent.json"
+}
+
+pids=()
+for collector in "$BIN_DIR"/agents-usage-*; do
+  [[ -x $collector ]] || continue
+  agent="${collector##*/agents-usage-}"
+  [[ $agent == "update" ]] && continue
+  wanted "$agent" || continue
+  collect "$collector" "$agent" &
+  pids+=($!)
+done
+
+status=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || status=1
+done
+exit $status

@@ -1,0 +1,88 @@
+{
+  "title": "Agents",
+  "empty": "No AI coding subscriptions found.\nAgents show up here once you've used them.",
+  "hero": {
+    "subscription": "Subscription"
+  },
+  "section": {
+    "balance": "BALANCE",
+    "limits": "LIMITS",
+    "tokens_by_day": "TOKENS BY DAY",
+    "tokens_by_model": "TOKENS BY MODEL"
+  },
+  "balance": {
+    "prepaid": "Prepaid credits",
+    "detail": "{spent} spent of {funded} funded",
+    "estimated": "estimated"
+  },
+  "limits": {
+    "resets_in": "Resets in {time}"
+  },
+  "window": {
+    "session": "Session",
+    "weekly": "Weekly",
+    "monthly": "Monthly",
+    "limit": "Limit"
+  },
+  "time": {
+    "now": "now"
+  },
+  "day": {
+    "today": "Today",
+    "sun": "Sun",
+    "mon": "Mon",
+    "tue": "Tue",
+    "wed": "Wed",
+    "thu": "Thu",
+    "fri": "Fri",
+    "sat": "Sat",
+    "detail": "{day} · {tokens} tokens",
+    "detail_today": "{day} · {tokens} tokens · {prompts} prompts · {sessions} sessions"
+  },
+  "model": {
+    "unknown": "Unknown",
+    "detail": "In {input} · out {output} · cache read {cacheRead} · cache write {cacheWrite}"
+  },
+  "sync": {
+    "merged": {
+      "one": "Merged from {count} device",
+      "other": "Merged from {count} devices"
+    },
+    "mkdir_failed": "Usage sync mkdir failed",
+    "scan_failed": "Usage sync scan failed"
+  },
+  "settings": {
+    "refresh_interval": {
+      "label": "Refresh interval (seconds)",
+      "description": "How often the usage records regenerate. Opening the panel also re-probes the rate limits without rescanning transcripts."
+    },
+    "disabled_agents": {
+      "label": "Disabled agents",
+      "description": "Agent ids to hide, one per entry: claude, codex, fireworks. Every discovered agent is enabled by default. A disabled agent is skipped when the records regenerate."
+    },
+    "launch_command": {
+      "label": "Launch command",
+      "description": "What right-clicking the bar icon runs in a terminal."
+    },
+    "sync_enabled": {
+      "label": "Synced aggregation",
+      "description": "Write this machine's usage snapshot and merge the snapshots from other machines. Rate limits and balances stay per-account and are never merged."
+    },
+    "sync_dir": {
+      "label": "Sync folder",
+      "description": "A folder synced by Syncthing, Dropbox, rsync, etc."
+    },
+    "sync_file_name": {
+      "label": "Snapshot file name",
+      "description": "Optional. Defaults to <hostname>.json. Use a different file name on each machine, such as laptop.json or desktop.json."
+    },
+    "sync_device_id": {
+      "label": "Device id",
+      "description": "Optional stable device name used inside synced aggregate snapshots."
+    },
+    "glyph": {
+      "label": "Glyph",
+      "description": "Bar icon, and the stand-in in the panel for an agent that ships no mark in assets/."
+    }
+  }
+}
