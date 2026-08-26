@@ -6,6 +6,7 @@ Personal [Noctalia](https://noctalia.dev) plugin source.
 | --- | --- |
 | [`claude-usage`](claude-usage/) | Claude Code usage limits in the bar — session, weekly and per-model windows, pacing, reset countdowns, and extra-usage spend |
 | [`agents`](agents/) | One bar icon and one panel for every AI coding subscription — limits, prepaid balance, tokens by day and by model. A port of [omarchy's Quickshell `agents` plugin](https://github.com/basecamp/omarchy/tree/quattro/shell/plugins/agents) |
+| [`winboat`](winboat/) | WinBoat Docker/Podman container status with start and stop controls |
 
 Both read Anthropic's OAuth usage endpoint, so running both doubles the request
 rate against an endpoint that rate-limits hard. They are otherwise independent:
