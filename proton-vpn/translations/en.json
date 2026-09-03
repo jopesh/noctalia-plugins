@@ -1,0 +1,102 @@
+{
+  "title": "Proton VPN",
+  "status": {
+    "loading": "Checking…",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "unavailable": "CLI unavailable",
+    "signin_required": "Sign-in required",
+    "error": "Status unknown",
+    "off": "Off"
+  },
+  "action": {
+    "connect": "Quick connect",
+    "disconnect": "Disconnect",
+    "connecting": "Connecting…",
+    "disconnecting": "Disconnecting…",
+    "working": "Applying…",
+    "refresh": "Refresh",
+    "refresh_servers": "Reload the server list",
+    "signin": "Sign in…",
+    "connect_here": "Connect to the fastest server here"
+  },
+  "map": {
+    "loading": "Loading server map…"
+  },
+  "detail": {
+    "not_connected": "Not connected",
+    "place": "{city}, {country}",
+    "load": "{load}% load",
+    "secure_core": "Secure Core via {code}",
+    "country_meta": "{count} cities · min load {load}%",
+    "country_meta_one": "1 city · min load {load}%",
+    "city_meta": "{count} servers · min load {load}%",
+    "city_meta_one": "1 server · min load {load}%"
+  },
+  "feature": {
+    "p2p": "P2P",
+    "secure_core": "Secure Core",
+    "tor": "Tor"
+  },
+  "features": {
+    "netshield": "NetShield",
+    "netshield_off": "Off",
+    "netshield_malware": "Malware",
+    "netshield_full": "Malware, ads & trackers",
+    "kill_switch": "Kill switch",
+    "kill_switch_connected": "Kill switch (disconnect to change)",
+    "off": "Off",
+    "standard": "Standard",
+    "port_forwarding": "Port forwarding",
+    "vpn_accelerator": "VPN accelerator",
+    "moderate_nat": "Moderate NAT",
+    "ipv6": "IPv6",
+    "unknown": "—"
+  },
+  "ui": {
+    "filter": "Filter countries and cities…",
+    "no_servers": "No server list yet",
+    "no_matches": "Nothing matches that filter"
+  },
+  "footer": {
+    "updated": "Updated {time}",
+    "never": "No status yet"
+  },
+  "notice": {
+    "ipv6": "IPv6 changed — reconnect to apply it."
+  },
+  "error": {
+    "no_cli": "proton-vpn-cli not found. Install it, or correct the CLI path in the plugin settings.",
+    "no_nmcli": "nmcli not found. Proton VPN's CLI needs NetworkManager.",
+    "nmcli": "Could not read the active NetworkManager connections.",
+    "no_servers": "No server list cached yet. Run 'protonvpn signin' in a terminal so the CLI downloads one.",
+    "no_terminal": "Could not open a terminal. Run 'protonvpn signin' yourself.",
+    "launch": "Could not launch the Proton VPN CLI.",
+    "timeout": "Timed out after 60 s.",
+    "generic": "The Proton VPN CLI reported an error."
+  },
+  "settings": {
+    "cli_path": {
+      "label": "CLI path",
+      "description": "Command or absolute path for proton-vpn-cli."
+    },
+    "poll_interval": {
+      "label": "Status interval (seconds)",
+      "description": "How often the active NetworkManager connections are read. This is an nmcli call, not a CLI call."
+    },
+    "servers_refresh": {
+      "label": "Server list interval (minutes)",
+      "description": "How often the cached server list and the map are rebuilt. They also rebuild whenever the server, the theme mode or a colour changes."
+    },
+    "color_server": {
+      "label": "Server dot colour",
+      "description": "Colour of the city dots on the map."
+    },
+    "color_connected": {
+      "label": "Connected colour",
+      "description": "Colour of the connected marker, the bar glyph and the location markers."
+    },
+    "show_label": { "label": "Show status text" },
+    "glyph": { "label": "Glyph" }
+  }
+}

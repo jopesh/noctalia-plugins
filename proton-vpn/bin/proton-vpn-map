@@ -1,0 +1,490 @@
+#!/usr/bin/env python3
+"""Turn the Proton VPN server-list cache into panel-ready JSON and an SVG map.
+
+The Proton VPN CLI keeps a ~24 MB ``serverlist.json`` under
+``~/.cache/Proton/VPN``. Parsing that in the Noctalia plugin would stall the
+shell, so this helper does it once per cache refresh, collapses it to a compact
+per-country / per-city summary, and memoises that summary in
+``<data-dir>/servers.json`` keyed by the server list's mtime. Repeated calls
+(every poll, every theme flip) read only the small file.
+
+It also renders a stylistic dot-matrix world map: the land background comes from
+``../assets/land.json``, every Proton city gets a dot, and the currently
+connected city gets a highlighted marker with two rings — plus a dashed
+entry-to-exit line for Secure Core servers. The SVG is content addressed
+(``map-<sha1>.svg``) so identical inputs always produce the same path and the
+shell's image cache stays valid; every other ``map-*.svg`` in the data dir is
+removed afterwards.
+
+stdout is always exactly one JSON object. Exit 0 with ``{"ok": true, ...}``, or
+exit 1 with ``{"ok": false, "error": "no_cache"|"bad_cache"|"write_failed", ...}``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+
+DEFAULT_CACHE = os.path.expanduser("~/.cache/Proton/VPN/serverlist.json")
+DEFAULT_WIDTH = 376
+DEFAULT_HEIGHT = 144
+DEFAULT_COLOR_SERVER = "#6d4aff"
+DEFAULT_COLOR_CONNECTED = "#a6e3a1"
+
+COMPACT_VERSION = 1
+STATUS_ENABLED = 1
+FEATURE_SECURE_CORE = 1
+FEATURE_TOR = 2
+
+NO_CACHE_MESSAGE = (
+    "Proton VPN server list not found at {path}. Run 'protonvpn signin' (or "
+    "'protonvpn status' once you are signed in) so the CLI downloads it."
+)
+
+
+# --------------------------------------------------------------------------
+# output helpers
+# --------------------------------------------------------------------------
+
+
+def emit(payload: dict, code: int) -> int:
+    """Print the single JSON object this tool contracts to produce."""
+    json.dump(payload, sys.stdout, separators=(",", ":"))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return code
+
+
+def fail(error: str, message: str) -> int:
+    return emit({"ok": False, "error": error, "message": message}, 1)
+
+
+def country_namer():
+    """Return a code -> display-name function.
+
+    The Proton API package ships the country table but importing it costs ~90 ms,
+    so it is loaded lazily: only a full re-parse of the server list needs names.
+    Without the package (or on any import error) codes are used verbatim.
+    """
+    try:
+        from proton.vpn.session.servers.country_codes import get_country_name_by_code
+    except Exception:
+        return lambda code: code
+
+    def name(code: str) -> str:
+        try:
+            return get_country_name_by_code(code) or code
+        except Exception:
+            return code
+
+    return name
+
+
+# --------------------------------------------------------------------------
+# server list -> compact summary
+# --------------------------------------------------------------------------
+
+
+def build_compact(raw: dict, cache_mtime: int) -> dict:
+    """Collapse the raw LogicalServers array into the compact summary."""
+    logicals = raw.get("LogicalServers")
+    if not isinstance(logicals, list):
+        raise ValueError("LogicalServers missing or not a list")
+
+    country_name = country_namer()
+    cities: dict[tuple, dict] = {}
+    countries: dict[str, dict] = {}
+    servers: dict[str, list] = {}
+
+    for entry in logicals:
+        if not isinstance(entry, dict) or entry.get("Status") != STATUS_ENABLED:
+            continue
+        name = entry.get("Name")
+        code = entry.get("ExitCountry")
+        if not name or not code:
+            continue
+        city = entry.get("City") or code
+        features = int(entry.get("Features") or 0)
+        tier = int(entry.get("Tier") or 0)
+        load = int(entry.get("Load") or 0)
+        score = float(entry.get("Score") or 0.0)
+        location = entry.get("Location") or {}
+        lat = location.get("Lat")
+        lon = location.get("Long")
+
+        country = countries.get(code)
+        if country is None:
+            country = countries[code] = {
+                "code": code,
+                "name": country_name(code),
+                "cities": set(),
+                "servers": 0,
+                "features": 0,
+                "minLoad": load,
+                "tier": tier,
+            }
+        country["cities"].add(city)
+        country["servers"] += 1
+        country["features"] |= features
+        country["minLoad"] = min(country["minLoad"], load)
+        country["tier"] = min(country["tier"], tier)
+
+        key = (code, city)
+        bucket = cities.get(key)
+        if bucket is None:
+            bucket = cities[key] = {
+                "code": code,
+                "country": country["name"],
+                "city": city,
+                "latSum": 0.0,
+                "lonSum": 0.0,
+                "located": 0,
+                "servers": 0,
+                "features": 0,
+                "minLoad": load,
+                "tier": tier,
+                "best": None,
+                "bestScore": None,
+                "bestPlain": None,
+                "bestPlainScore": None,
+            }
+        bucket["servers"] += 1
+        bucket["features"] |= features
+        bucket["minLoad"] = min(bucket["minLoad"], load)
+        bucket["tier"] = min(bucket["tier"], tier)
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            bucket["latSum"] += float(lat)
+            bucket["lonSum"] += float(lon)
+            bucket["located"] += 1
+        # "best" = lowest Score; prefer a plain server (no Secure Core, no Tor).
+        if bucket["bestScore"] is None or (score, name) < (bucket["bestScore"], bucket["best"]):
+            bucket["best"], bucket["bestScore"] = name, score
+        if not features & (FEATURE_SECURE_CORE | FEATURE_TOR):
+            if bucket["bestPlainScore"] is None or (score, name) < (
+                bucket["bestPlainScore"],
+                bucket["bestPlain"],
+            ):
+                bucket["bestPlain"], bucket["bestPlainScore"] = name, score
+
+        servers[name] = [key, load, features, tier, entry.get("EntryCountry") or code]
+
+    ordered = sorted(cities, key=lambda k: (cities[k]["country"], cities[k]["city"]))
+    city_index = {key: i for i, key in enumerate(ordered)}
+    city_list = []
+    for key in ordered:
+        bucket = cities[key]
+        located = bucket["located"] or 1
+        city_list.append(
+            {
+                "code": bucket["code"],
+                "country": bucket["country"],
+                "city": bucket["city"],
+                "lat": round(bucket["latSum"] / located, 4),
+                "lon": round(bucket["lonSum"] / located, 4),
+                "servers": bucket["servers"],
+                "features": bucket["features"],
+                "minLoad": bucket["minLoad"],
+                "tier": bucket["tier"],
+                "best": bucket["bestPlain"] or bucket["best"],
+            }
+        )
+    country_list = []
+    for code in sorted(countries, key=lambda c: (countries[c]["name"], c)):
+        country = countries[code]
+        country_list.append(
+            {
+                "code": country["code"],
+                "name": country["name"],
+                "cities": sorted(country["cities"]),
+                "servers": country["servers"],
+                "features": country["features"],
+                "minLoad": country["minLoad"],
+                "tier": country["tier"],
+            }
+        )
+
+    return {
+        "version": COMPACT_VERSION,
+        "generatedAt": int(time.time()),
+        "cacheMtime": cache_mtime,
+        "listExpiresAt": raw.get("ExpirationTime"),
+        "loadsExpireAt": raw.get("LoadsExpirationTime"),
+        "maxTier": raw.get("MaxTier"),
+        "countries": country_list,
+        "cities": city_list,
+        # Not part of stdout: name -> [city index, load, features, tier, entry code].
+        "servers": {
+            name: [city_index[val[0]], val[1], val[2], val[3], val[4]]
+            for name, val in servers.items()
+        },
+    }
+
+
+def load_compact(path: str, cache_mtime: int):
+    """Return the memoised compact summary if it matches the cache mtime."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("version") != COMPACT_VERSION or data.get("cacheMtime") != cache_mtime:
+        return None
+    if not isinstance(data.get("cities"), list) or not isinstance(data.get("servers"), dict):
+        return None
+    if not isinstance(data.get("countries"), list):
+        return None
+    return data
+
+
+def store_compact(path: str, compact: dict) -> None:
+    """Write the compact summary next to the maps; best effort, never fatal."""
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(compact, fh, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"proton-vpn-map: could not cache {path}: {exc}", file=sys.stderr)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def find_active(compact: dict, name: str):
+    """Build the `active` object for a server name, or None if it is unknown."""
+    record = compact["servers"].get(name)
+    if not record:
+        return None
+    index, load, features, tier, entry_code = record
+    cities = compact["cities"]
+    if not isinstance(index, int) or not 0 <= index < len(cities):
+        return None
+    city = cities[index]
+    return {
+        "name": name,
+        "code": city["code"],
+        "country": city["country"],
+        "city": city["city"],
+        "load": load,
+        "features": features,
+        "tier": tier,
+        "lat": city["lat"],
+        "lon": city["lon"],
+        "secureCore": bool(features & FEATURE_SECURE_CORE),
+        "entryCode": entry_code,
+    }
+
+
+# --------------------------------------------------------------------------
+# SVG map
+# --------------------------------------------------------------------------
+
+
+def load_land(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def num(value: float) -> str:
+    """Format a coordinate with at most one decimal, no trailing '.0'."""
+    text = f"{value:.1f}"
+    return text[:-2] if text.endswith(".0") else text
+
+
+def render_svg(land, cities, active, opts) -> str:
+    """Render the dot-matrix map. Land, then city dots, then the active marker."""
+    width, height = opts.width, opts.height
+    cols, rows = land["cols"], land["rows"]
+    lon_left, lon_right = land["lonLeft"], land["lonRight"]
+    lat_top = land["latTop"]
+    pitch = width / cols
+    grid_top = (height - rows * pitch) / 2.0
+    lon_span = float(lon_right - lon_left)
+    # Same equirectangular window as the mask: one cell is `pitch` px either way.
+    deg_per_px = lon_span / width
+
+    def project(lat, lon):
+        x = (lon - lon_left) / deg_per_px
+        y = grid_top + (lat_top - lat) / deg_per_px
+        return x, y
+
+    land_fill = "#ffffff" if opts.dark else "#000000"
+    land_opacity = "0.16" if opts.dark else "0.12"
+
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+        f'width="{width}" height="{height}">',
+        f'<g fill="{land_fill}" fill-opacity="{land_opacity}">',
+    ]
+    land_r = num(0.30 * pitch)
+    for r, line in enumerate(land["mask"]):
+        cy = num(grid_top + (r + 0.5) * pitch)
+        for c, ch in enumerate(line):
+            if ch == "#":
+                out.append(f'<circle cx="{num((c + 0.5) * pitch)}" cy="{cy}" r="{land_r}"/>')
+    out.append("</g>")
+
+    city_r = num(0.5 * pitch)
+    out.append(f'<g fill="{opts.color_server}" fill-opacity="0.8">')
+    for city in cities:
+        x, y = project(city["lat"], city["lon"])
+        out.append(f'<circle cx="{num(x)}" cy="{num(y)}" r="{city_r}"/>')
+    out.append("</g>")
+
+    if active:
+        ax, ay = project(active["lat"], active["lon"])
+        colour = opts.color_connected
+        if active.get("secureCore"):
+            entry = next(
+                (c for c in cities if c["code"] == active.get("entryCode")), None
+            )
+            if entry is not None:
+                ex, ey = project(entry["lat"], entry["lon"])
+                out.append(
+                    f'<line x1="{num(ex)}" y1="{num(ey)}" x2="{num(ax)}" y2="{num(ay)}" '
+                    f'stroke="{colour}" stroke-opacity="0.5" stroke-width="1" '
+                    'stroke-dasharray="3 3" fill="none"/>'
+                )
+        out.append(
+            f'<circle cx="{num(ax)}" cy="{num(ay)}" r="{num(3.2 * pitch)}" fill="none" '
+            f'stroke="{colour}" stroke-width="1" opacity="0.35"/>'
+        )
+        out.append(
+            f'<circle cx="{num(ax)}" cy="{num(ay)}" r="{num(1.9 * pitch)}" fill="none" '
+            f'stroke="{colour}" stroke-width="1.2" opacity="0.9"/>'
+        )
+        out.append(
+            f'<circle cx="{num(ax)}" cy="{num(ay)}" r="{num(0.9 * pitch)}" fill="{colour}"/>'
+        )
+
+    out.append("</svg>")
+    return "".join(out)
+
+
+def write_map(data_dir: str, svg: str) -> str:
+    """Write map-<sha1>.svg and drop every other map file in the directory."""
+    digest = hashlib.sha1(svg.encode("utf-8")).hexdigest()
+    path = os.path.join(data_dir, f"map-{digest}.svg")
+    os.makedirs(data_dir, exist_ok=True)
+    if not os.path.exists(path):
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(svg)
+        os.replace(tmp, path)
+    for stale in glob.glob(os.path.join(data_dir, "map-*.svg")):
+        if os.path.abspath(stale) != os.path.abspath(path):
+            try:
+                os.unlink(stale)
+            except OSError:
+                pass
+    return path
+
+
+# --------------------------------------------------------------------------
+# entry point
+# --------------------------------------------------------------------------
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="proton-vpn-map", description=__doc__.splitlines()[0]
+    )
+    parser.add_argument("--cache", default=DEFAULT_CACHE, help="Proton serverlist.json path")
+    parser.add_argument("--data-dir", help="where servers.json and map-*.svg are written")
+    parser.add_argument("--active", help="connected server name, e.g. DE#402")
+    # Not a mutually exclusive group on purpose: the caller builds this command
+    # line as a shell string, and a stray extra flag must never turn stdout into
+    # an argparse usage error. Last flag wins.
+    parser.add_argument("--dark", dest="dark", action="store_true", default=True)
+    parser.add_argument("--light", dest="dark", action="store_false")
+    parser.add_argument("--color-server", default=DEFAULT_COLOR_SERVER)
+    parser.add_argument("--color-connected", default=DEFAULT_COLOR_CONNECTED)
+    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
+    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
+    parser.add_argument("--no-map", action="store_true", help="emit JSON only, write nothing")
+    return parser.parse_args(argv)
+
+
+HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
+
+
+def clean_color(value: str, fallback: str) -> str:
+    """Colours are interpolated into the SVG verbatim, so accept only #rrggbb[aa]."""
+    return value if isinstance(value, str) and HEX_COLOR.match(value) else fallback
+
+
+def main(argv=None) -> int:
+    opts = parse_args(argv)
+    opts.color_server = clean_color(opts.color_server, DEFAULT_COLOR_SERVER)
+    opts.color_connected = clean_color(opts.color_connected, DEFAULT_COLOR_CONNECTED)
+    here = os.path.dirname(os.path.realpath(__file__))
+    land_path = os.path.join(os.path.dirname(here), "assets", "land.json")
+    cache_path = os.path.expanduser(opts.cache)
+
+    if not opts.no_map and not opts.data_dir:
+        return fail("write_failed", "--data-dir is required unless --no-map is given.")
+
+    try:
+        cache_mtime = int(os.stat(cache_path).st_mtime)
+    except OSError:
+        return fail("no_cache", NO_CACHE_MESSAGE.format(path=cache_path))
+
+    # --no-map means "write nothing": the compact cache may still be read, never written.
+    compact_path = os.path.join(opts.data_dir, "servers.json") if opts.data_dir else None
+    compact = load_compact(compact_path, cache_mtime) if compact_path else None
+    if compact is None:
+        try:
+            with open(cache_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            compact = build_compact(raw, cache_mtime)
+        except (ValueError, OSError) as exc:
+            return fail("bad_cache", f"Could not parse {cache_path}: {exc}")
+        if compact_path and not opts.no_map:
+            try:
+                os.makedirs(opts.data_dir, exist_ok=True)
+            except OSError as exc:
+                return fail("write_failed", f"Cannot create {opts.data_dir}: {exc}")
+            store_compact(compact_path, compact)
+
+    active = find_active(compact, opts.active) if opts.active else None
+
+    map_path = None
+    if not opts.no_map:
+        try:
+            land = load_land(land_path)
+        except (OSError, ValueError) as exc:
+            return fail("write_failed", f"Cannot read land mask {land_path}: {exc}")
+        try:
+            svg = render_svg(land, compact["cities"], active, opts)
+            map_path = write_map(opts.data_dir, svg)
+        except OSError as exc:
+            return fail("write_failed", f"Cannot write map into {opts.data_dir}: {exc}")
+
+    return emit(
+        {
+            "ok": True,
+            "generatedAt": compact["generatedAt"],
+            "cacheMtime": compact["cacheMtime"],
+            "listExpiresAt": compact["listExpiresAt"],
+            "loadsExpireAt": compact["loadsExpireAt"],
+            "maxTier": compact["maxTier"],
+            "countries": compact["countries"],
+            "cities": compact["cities"],
+            "active": active,
+            "mapPath": map_path,
+        },
+        0,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

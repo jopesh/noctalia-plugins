@@ -1,0 +1,91 @@
+# Proton VPN — bar indicator, world map and connect controls for proton-vpn-cli.
+#
+# Architecture (mirrors johnschmidt/winboat):
+#   [[service]]  polls NetworkManager, drives `protonvpn`, publishes proton_vpn.data
+#   [[widget]]   thin renderer, opens the panel on click
+#   [[panel]]    map, quick connect, location picker and the CLI feature switches
+#
+# Status comes from nmcli, never from `protonvpn status`: the CLI needs ~0.7 s of
+# CPU per invocation, while its NetworkManager profile ("ProtonVPN <SERVER>") is
+# free to read. bin/proton-vpn-map does the same for the 24 MB server-list cache.
+
+id = "johnschmidt/proton-vpn"
+name = "Proton VPN"
+version = "0.1.0"
+plugin_api = 23
+author = "johnschmidt"
+license = "MIT"
+dependencies = ["protonvpn", "nmcli"]
+tags = ["vpn", "network", "privacy", "indicator", "panel"]
+icon = "shield-lock"
+description = "Proton VPN status, a dot-matrix world map and one-click connect by country or city."
+
+[[setting]]
+key = "cli_path"
+type = "string"
+label_key = "settings.cli_path.label"
+description_key = "settings.cli_path.description"
+default = "protonvpn"
+
+[[setting]]
+key = "poll_interval"
+type = "int"
+label_key = "settings.poll_interval.label"
+description_key = "settings.poll_interval.description"
+default = 5
+min = 2
+max = 60
+step = 1
+
+[[setting]]
+key = "servers_refresh"
+type = "int"
+label_key = "settings.servers_refresh.label"
+description_key = "settings.servers_refresh.description"
+default = 15
+min = 5
+max = 120
+step = 5
+
+[[setting]]
+key = "color_server"
+type = "color"
+label_key = "settings.color_server.label"
+description_key = "settings.color_server.description"
+default = "#6d4aff"
+
+[[setting]]
+key = "color_connected"
+type = "color"
+label_key = "settings.color_connected.label"
+description_key = "settings.color_connected.description"
+default = "#a6e3a1"
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  [[widget.setting]]
+  key = "show_label"
+  type = "bool"
+  label_key = "settings.show_label.label"
+  default = true
+
+  [[widget.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  default = "shield-lock"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 400
+height = 760
+placement = "attached"
+position = "auto"
+open_near_click = true
+
+[[service]]
+id = "service"
+entry = "service.luau"
