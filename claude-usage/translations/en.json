@@ -7,12 +7,24 @@
     "session": "Session",
     "weekly": "Weekly",
     "model_only": "{model} only",
-    "resets_in": "Resets in {time}",
-    "resets_unknown": "No reset scheduled"
+    "resets_unknown": "No reset scheduled",
+    "left": "{time} left",
+    "elapsed_in": "{time} in",
+    "resets_at": "resets {time}"
+  },
+  "lane": {
+    "used": "Used",
+    "elapsed": "Elapsed",
+    "all": "All",
+    "spend": "Spend"
+  },
+  "verdict": {
+    "empty_by": "Ahead of pace — empty by ~{time}",
+    "lane_empty_by": "{lane} empty by ~{time}"
   },
   "extra": {
     "title": "Extra usage",
-    "limit": "Limit: {amount}"
+    "used_of": "{used} / {limit}"
   },
   "age": {
     "now": "just now",
@@ -75,8 +87,8 @@
       "description": "Font for all text in the panel. An installed family name (e.g. \"JetBrainsMono NFM\") or a path to a .ttf/.otf file. Leave empty to use the shell font."
     },
     "show_pace_marker": {
-      "label": "Show pacing marker",
-      "description": "Draw a marker in each bar at the point you'd be at if you spread usage evenly across the window."
+      "label": "Show pacing",
+      "description": "Draw the elapsed lane under each window, the marker for now, and the dashes projecting where this rate lands you by the reset."
     },
     "allow_token_refresh": {
       "label": "Refresh expired tokens",

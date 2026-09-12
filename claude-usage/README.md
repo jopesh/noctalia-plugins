@@ -25,13 +25,32 @@ the panel; right-click to force a refresh.
 
 ### Panel
 
-One section per limit window: a cell bar, a pacing marker, the percentage and a
-reset countdown. Extra-usage spend follows when there is any, then the time of
-the last successful fetch and a refresh button.
+Every window is drawn on its own time axis. The track *is* the window: its left
+edge is when the window opened, its right edge is the reset. Two lanes share
+that scale —
 
-The pacing marker sits at the point you'd be at if usage were spread evenly
-across the window: a fill left of the marker means you're under pace (`↓`),
-right of it means you're burning faster than the window refills (`↑`).
+- **Used** — how much of the limit is gone, as a share of the whole window
+- **Elapsed** — how much of the window has gone
+
+— so pacing is the gap between two lengths rather than a tick you have to read
+against a fill. Dashes carry the used lane on to where this rate lands it by
+the reset, and the bright hairline is now. Under the lanes, the axis says how
+far into the window you are and when it resets.
+
+The session window gets a card of its own. The weekly window and every
+per-model window share one window, so they share one axis: `All` plus a lane
+per model, in a single card. Extra-usage spend gets a lane and no axis, because
+there is no window behind it.
+
+A line under a card names the lane that runs out first, and when
+(`Opus empty by ~Sat 00:00`) — only when a lane is actually on course to empty
+before its reset. Nothing to say, nothing said.
+
+Stale numbers lose their colour entirely, the way the bar widget dims its text,
+and their projections are suppressed: a red 91% that was true fourteen hours ago
+is worse than no colour at all. The elapsed lane keeps advancing while it waits,
+since it is computed locally from the reset time — so a stale panel visibly
+drifts apart instead of quietly lying.
 
 ### IPC
 
@@ -53,7 +72,7 @@ Plugin-wide, in Settings → Plugins:
 | Warning threshold | `70` | Percentage at which bars turn the warning colour |
 | Critical threshold | `90` | Percentage at which bars turn the critical colour |
 | Normal / Warning / Critical colour | `#a6e3a1` / `#f9e2af` / `#f38ba8` | Any colour |
-| Show pacing marker | on | The in-bar elapsed-time marker |
+| Show pacing | on | The elapsed lane, the now marker and the projection dashes |
 | Refresh expired tokens | on | Advanced; see [Token refresh](#token-refresh) |
 
 Per bar widget:
