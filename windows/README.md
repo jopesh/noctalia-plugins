@@ -68,9 +68,15 @@ world-readable anyway.
 
 ## Requirements
 
-`docker`, `pkexec`, `python3` and `xfreerdp3`. If `pkexec` ever starts prompting,
-a polkit authentication agent has to be running — without one, start and stop
-fail with "Authorization refused".
+`docker`, `pkexec`, `python3` and `xfreerdp3`.
+
+**A polkit authentication agent must be running.** polkit reports `auth_admin`
+for `org.freedesktop.policykit.exec` on this host, so `pkexec` needs an agent to
+collect the password; with none, it blocks forever rather than failing. The
+plugin bounds the call with `timeout` and reports "no polkit authentication
+agent is running" instead of freezing, but start and stop cannot work until an
+agent exists. Status, Connect and the web console need no privileges and work
+regardless.
 
 ## IPC
 

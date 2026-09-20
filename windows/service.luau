@@ -9,8 +9,12 @@
 
 local POLL_MS = 1000
 local STATUS_TIMEOUT_MS = 8000
-local START_TIMEOUT_MS = 180000
-local STOP_TIMEOUT_MS = 140000 -- The compose file allows a 120 s graceful stop.
+local START_TIMEOUT_S = 90
+local STOP_TIMEOUT_S = 150 -- The compose file allows a 120 s graceful stop.
+-- runAsync has to outlive the `timeout` that bounds pkexec, or the shell's own
+-- timeout fires first and the exit code that says "no polkit agent" is lost.
+local START_TIMEOUT_MS = (START_TIMEOUT_S + 10) * 1000
+local STOP_TIMEOUT_MS = (STOP_TIMEOUT_S + 10) * 1000
 local CONNECT_DEADLINE = 600 -- How long a queued connect waits for a cold boot.
 
 local data = { state = "loading", busy = false }
@@ -176,7 +180,12 @@ local function control(op, onDone)
   publish()
 
   local action = op == "start" and "up -d" or "stop"
-  local command = "pkexec /usr/bin/docker compose -f " .. sh(composePath()) .. " " .. action
+  -- pkexec blocks indefinitely when authentication is required and no polkit
+  -- agent is running to answer it, which from here looks like a frozen bar.
+  -- `timeout` turns that into exit 124 and a message that names the cause.
+  local limit = op == "start" and START_TIMEOUT_S or STOP_TIMEOUT_S
+  local command = "timeout " .. limit .. " pkexec /usr/bin/docker compose -f "
+    .. sh(composePath()) .. " " .. action
   local started = noctalia.runAsync(command, function(result)
     controlInFlight = false
     data.busy = false
@@ -185,7 +194,9 @@ local function control(op, onDone)
     if code ~= 0 then
       -- pkexec reserves 126 for a dismissed prompt and 127 for an authorization
       -- or exec failure; both mean root was refused, not that docker failed.
-      if code == 126 or code == 127 then
+      if code == 124 then
+        data.controlError = noctalia.tr("error.no_agent")
+      elseif code == 126 or code == 127 then
         data.controlError = noctalia.tr("error.not_authorized")
       else
         local stderr = noctalia.string.trim(result ~= nil and result.stderr or "")
