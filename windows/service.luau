@@ -24,13 +24,19 @@ local function cfg(key, fallback)
   return value == nil and fallback or value
 end
 
+-- Written out rather than as `value == "" and fallback or value`: that idiom
+-- yields the empty string when fallback is nil, which is exactly the case an
+-- optional setting relies on.
 local function trimmed(key, fallback)
   local value = cfg(key, fallback)
   if type(value) ~= "string" then
     return fallback
   end
   value = noctalia.string.trim(value)
-  return value == "" and fallback or value
+  if value == "" then
+    return fallback
+  end
+  return value
 end
 
 -- Quotes one argument for /bin/sh -c. plugin_api 23 has no argv-table runAsync,
@@ -275,21 +281,26 @@ function onIpc(event, _payload)
 end
 
 noctalia.state.watch("windows.cmd", function(value)
-  if type(value) == "table" then
-    if value.op == "refresh" then
-      data.controlError = nil
-      nextPollAt = 0
-      poll()
-    elseif value.op == "connect" then
-      connect()
-    elseif value.op == "web" then
-      openWeb()
-    elseif value.op == "stop" then
-      stop()
-    elseif value.op == "start" then
-      control("start")
-    end
+  -- The early return is load-bearing: clearing the key re-enters this watcher
+  -- with nil, and clearing again from there spins the shell's event loop for
+  -- good. Only a real command may reach the set() below.
+  if type(value) ~= "table" then
+    return
   end
+  if value.op == "refresh" then
+    data.controlError = nil
+    nextPollAt = 0
+    poll()
+  elseif value.op == "connect" then
+    connect()
+  elseif value.op == "web" then
+    openWeb()
+  elseif value.op == "stop" then
+    stop()
+  elseif value.op == "start" then
+    control("start")
+  end
+  -- Clear the key so an identical next command still registers as a change.
   noctalia.state.set("windows.cmd", nil)
 end)
 
