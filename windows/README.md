@@ -57,8 +57,33 @@ Both work standalone, outside Noctalia:
 bin/windows-status --compose ~/Windows/docker-compose.yml   # one JSON object
 bin/windows-rdp --dry-run                                   # show the argv
 bin/windows-rdp --wait                                      # block until Windows answers, then connect
+bin/windows-rdp --scale 150                                 # force a scale instead of detecting one
 bin/windows-rdp -- /f                                        # extra xfreerdp3 flags
 ```
+
+### Scaling
+
+`--scale auto` (the default) reads the scale of the monitor the session opens
+on — the *focused* output, since that is where the window lands — and passes it
+to the guest, so Windows renders at the right size on a HiDPI display instead of
+being scaled up as a blurry bitmap.
+
+RDP carries two scale factors, and they have different rules: `DESKTOP_SCALE_FACTOR`
+is free between 100 and 500, while `DEVICE_SCALE_FACTOR` may only be 100, 140 or
+180, so a fractional Wayland scale is snapped onto the nearest of those three.
+
+| Monitor scale | Flags |
+| --- | --- |
+| 1.0 | *none* — identical to not having the feature |
+| 1.25 | `/scale-desktop:125 /scale-device:140` |
+| 1.5 | `/scale-desktop:150 /scale-device:140` |
+| 1.75 | `/scale-desktop:175 /scale-device:180` |
+| 2.0 | `/scale-desktop:200 /scale-device:180` |
+
+Detection asks `niri msg --json focused-output`. On another compositor, or if
+niri cannot be reached, no flags are emitted and the session behaves as before —
+set the **RDP scaling** setting to a percentage to pin it by hand. An
+`rdp_command` override takes the whole command line over, scaling included.
 
 `windows-rdp` connects with `/dynamic-resolution`, `/sound:sys:pulse`,
 `/microphone:sys:pulse`, `+clipboard` and `/cert:ignore`. The password is passed

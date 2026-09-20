@@ -50,6 +50,13 @@ description_key = "settings.rdp_command.description"
 default = ""
 
 [[setting]]
+key = "rdp_scale"
+type = "string"
+label_key = "settings.rdp_scale.label"
+description_key = "settings.rdp_scale.description"
+default = "auto"
+
+[[setting]]
 key = "auto_connect"
 type = "bool"
 label_key = "settings.auto_connect.label"

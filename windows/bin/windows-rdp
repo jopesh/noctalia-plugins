@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 import time
 from importlib.machinery import SourceFileLoader
@@ -30,6 +32,13 @@ BIN_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_COMPOSE = "~/Windows/docker-compose.yml"
 DEFAULT_WAIT = 300
 CLIENT = "xfreerdp3"
+
+# RDP carries two scale factors (MS-RDPBCGR 2.2.2.2.1): DESKTOP_SCALE_FACTOR is
+# free between 100 and 500, while DEVICE_SCALE_FACTOR may only ever be 100, 140
+# or 180. A Wayland fractional scale has to be snapped onto that second set.
+DESKTOP_SCALE_MIN = 100
+DESKTOP_SCALE_MAX = 500
+DEVICE_SCALE_STEPS = (100, 140, 180)
 
 # Host-side defaults. Everything guest-facing is read from the compose file.
 BASE_FLAGS = [
@@ -54,7 +63,58 @@ def _load_sibling(name, filename):
 status = _load_sibling("windows_status", "windows-status")
 
 
-def build_argv(compose_path, extra):
+def detect_scale():
+    """The focused output's scale as a percentage, or None if unknown.
+
+    Focused rather than primary on purpose: the session opens on whichever
+    monitor the panel was clicked on, so that is the one to match.
+    """
+    try:
+        probe = subprocess.run(
+            ["niri", "msg", "--json", "focused-output"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    try:
+        logical = (json.loads(probe.stdout) or {}).get("logical") or {}
+    except ValueError:
+        return None
+    scale = logical.get("scale")
+    if not isinstance(scale, (int, float)) or scale <= 0:
+        return None
+    return int(round(scale * 100))
+
+
+def scale_flags(setting):
+    """Turn a scale setting into xfreerdp3 flags.
+
+    "auto" asks the compositor, "off" disables scaling, anything else is taken
+    as a literal percentage. An unscaled display yields no flags at all, which
+    keeps the common case byte-identical to not having this feature.
+    """
+    if setting == "off":
+        return []
+    percent = detect_scale() if setting == "auto" else None
+    if percent is None and setting != "auto":
+        try:
+            percent = int(float(setting))
+        except ValueError:
+            percent = None
+    if percent is None:
+        return []
+    desktop = max(DESKTOP_SCALE_MIN, min(DESKTOP_SCALE_MAX, percent))
+    device = min(DEVICE_SCALE_STEPS, key=lambda step: abs(step - desktop))
+    if desktop == 100 and device == 100:
+        return []
+    return ["/scale-desktop:%d" % desktop, "/scale-device:%d" % device]
+
+
+def build_argv(compose_path, extra, scale="auto"):
     env, ports = status.read_compose(compose_path)
     username = str(env.get("USERNAME") or "").strip()
     password = str(env.get("PASSWORD") or "").strip()
@@ -66,6 +126,7 @@ def build_argv(compose_path, extra):
     if password:
         argv.append("/p:%s" % password)
     argv.extend(BASE_FLAGS)
+    argv.extend(scale_flags(scale))
     argv.extend(extra)
     return argv, port
 
@@ -91,6 +152,12 @@ def main():
         help="block until Windows answers RDP (default %d s)" % DEFAULT_WAIT,
     )
     parser.add_argument(
+        "--scale",
+        default="auto",
+        metavar="auto|off|PERCENT",
+        help="match the focused monitor's scale (default), disable it, or force a percentage",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the xfreerdp3 command line instead of running it",
@@ -104,7 +171,7 @@ def main():
     compose_path = os.path.expanduser(args.compose)
 
     try:
-        argv, port = build_argv(compose_path, extra)
+        argv, port = build_argv(compose_path, extra, args.scale)
     except FileNotFoundError:
         print("windows-rdp: no compose file at %s" % compose_path, file=sys.stderr)
         return 1

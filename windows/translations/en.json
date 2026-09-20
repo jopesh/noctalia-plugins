@@ -55,6 +55,10 @@
       "label": "RDP command",
       "description": "Leave empty to use the bundled bin/windows-rdp launcher."
     },
+    "rdp_scale": {
+      "label": "RDP scaling",
+      "description": "'auto' matches the monitor the session opens on, 'off' disables scaling, or give a percentage such as 150."
+    },
     "auto_connect": {
       "label": "Start the VM when connecting",
       "description": "Connect starts the container if it is off, then opens RDP once Windows answers."

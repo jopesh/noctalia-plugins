@@ -153,7 +153,10 @@ local function launchRdp()
       failControl(noctalia.tr("error.no_plugin_dir"))
       return
     end
+    -- Only the bundled launcher understands --scale; an rdp_command override
+    -- means the user has taken the whole command line over.
     command = sh(bin) .. " --compose " .. sh(composePath())
+      .. " --scale " .. sh(trimmed("rdp_scale", "auto"))
   end
   if not noctalia.runAsync(command) then
     noctalia.notifyError(noctalia.tr("title"), noctalia.tr("error.rdp_failed"))
