@@ -1,6 +1,6 @@
 # Proton VPN — bar indicator, world map and connect controls for proton-vpn-cli.
 #
-# Architecture (mirrors johnschmidt/winboat):
+# Architecture (mirrors johnschmidt/windows):
 #   [[service]]  polls NetworkManager, drives `protonvpn`, publishes proton_vpn.data
 #   [[widget]]   thin renderer, opens the panel on click
 #   [[panel]]    map, quick connect, location picker and the CLI feature switches

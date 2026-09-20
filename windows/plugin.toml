@@ -1,0 +1,86 @@
+# Windows — bar indicator and controls for a dockurr/windows container.
+#
+# Architecture:
+#   [[service]]  polls bin/windows-status, drives docker compose, publishes windows.data
+#   [[widget]]   thin renderer, opens the panel on click
+#   [[panel]]    Connect / Start / Stop, the web console and the VM's vitals
+#
+# Status never costs a privilege escalation. `docker` can only be reached through
+# pkexec here (~2 s per call), so polling it would mean spawning a root process
+# every few seconds. bin/windows-status instead reads the QEMU process out of
+# /proc and probes RDP directly — no privilege, ~25 ms — and pkexec is reserved
+# for the two things that genuinely need root: starting and stopping the VM.
+#
+# Every port, credential and sizing value is read from the compose file at run
+# time, so editing docker-compose.yml is enough to reconfigure the plugin.
+
+id = "johnschmidt/windows"
+name = "Windows"
+version = "2.0.0"
+plugin_api = 23
+author = "johnschmidt"
+license = "MIT"
+dependencies = ["docker", "pkexec", "python3", "xfreerdp3"]
+tags = ["docker", "windows", "vm", "indicator", "system", "panel"]
+icon = "brand-windows"
+description = "Status and controls for a dockurr/windows container, with one-click RDP."
+
+[[setting]]
+key = "compose_file"
+type = "string"
+label_key = "settings.compose_file.label"
+description_key = "settings.compose_file.description"
+default = "~/Windows/docker-compose.yml"
+
+[[setting]]
+key = "refresh_interval"
+type = "int"
+label_key = "settings.refresh_interval.label"
+description_key = "settings.refresh_interval.description"
+default = 5
+min = 2
+max = 60
+step = 1
+
+[[setting]]
+key = "rdp_command"
+type = "string"
+label_key = "settings.rdp_command.label"
+description_key = "settings.rdp_command.description"
+default = ""
+
+[[setting]]
+key = "auto_connect"
+type = "bool"
+label_key = "settings.auto_connect.label"
+description_key = "settings.auto_connect.description"
+default = true
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  [[widget.setting]]
+  key = "show_label"
+  type = "bool"
+  label_key = "settings.show_label.label"
+  default = true
+
+  [[widget.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  default = "brand-windows"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 320
+height = 262
+placement = "attached"
+position = "auto"
+open_near_click = true
+
+[[service]]
+id = "service"
+entry = "service.luau"

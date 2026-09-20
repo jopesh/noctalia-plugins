@@ -1,0 +1,64 @@
+{
+  "title": "Windows",
+  "state": {
+    "loading": "Checking…",
+    "stopped": "Stopped",
+    "preparing": "Preparing…",
+    "booting": "Booting…",
+    "running": "Running",
+    "error": "Error"
+  },
+  "action": {
+    "connect": "Connect",
+    "cancel": "Cancel",
+    "start": "Start",
+    "stop": "Stop",
+    "starting": "Starting…",
+    "stopping": "Stopping…",
+    "connecting": "Waiting for RDP…",
+    "refresh": "Refresh",
+    "web": "Web console"
+  },
+  "metric": {
+    "uptime": "Uptime",
+    "memory": "Memory",
+    "cores": "Cores"
+  },
+  "detail": {
+    "endpoints": "{user}@127.0.0.1:{rdp} · console :{web}"
+  },
+  "error": {
+    "probe_failed": "The status probe returned nothing",
+    "no_compose": "No compose file at {path}",
+    "bad_compose": "Could not read the compose file",
+    "no_plugin_dir": "Could not locate the plugin directory",
+    "no_status_bin": "Could not run bin/windows-status",
+    "no_pkexec": "Could not launch pkexec",
+    "not_authorized": "Authorization refused — is a polkit agent running?",
+    "command_failed": "docker compose {op} failed",
+    "not_running": "Windows is not running",
+    "rdp_failed": "Could not launch the RDP session",
+    "web_failed": "Could not open the web console",
+    "connect_timeout": "Windows did not answer RDP in time"
+  },
+  "settings": {
+    "compose_file": {
+      "label": "Compose file",
+      "description": "Path to the dockurr/windows docker-compose.yml. Ports, credentials and VM sizing are all read from it."
+    },
+    "refresh_interval": {
+      "label": "Refresh interval (seconds)",
+      "description": "How often to probe the VM. The probe needs no privileges and costs about 40 ms."
+    },
+    "rdp_command": {
+      "label": "RDP command",
+      "description": "Leave empty to use the bundled bin/windows-rdp launcher."
+    },
+    "auto_connect": {
+      "label": "Start the VM when connecting",
+      "description": "Connect starts the container if it is off, then opens RDP once Windows answers."
+    },
+    "show_label": { "label": "Show status text" },
+    "glyph": { "label": "Glyph" }
+  }
+}

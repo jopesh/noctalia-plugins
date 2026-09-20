@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Open an RDP session against the dockurr/windows container.
+
+Credentials, the host RDP port and everything else come from the compose file,
+so there is nothing to keep in sync: change docker-compose.yml and the next
+connect follows. ``--wait`` blocks until Windows actually answers the RDP
+handshake, which is what makes "start the VM and connect" a single step from a
+terminal. The Noctalia service does not use ``--wait`` -- it watches readiness
+on its own poll and calls this script once the guest is up.
+
+The password is passed as ``/p:``, so it is visible in the process list.
+``/from-stdin`` would avoid that but silently ignores a piped password, and the
+compose file it comes from is world-readable anyway, so this trades nothing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import os
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+
+# The plugin directory is not ours to litter with __pycache__, and it may be
+# read-only wherever the plugin source is installed from.
+sys.dont_write_bytecode = True
+
+BIN_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_COMPOSE = "~/Windows/docker-compose.yml"
+DEFAULT_WAIT = 300
+CLIENT = "xfreerdp3"
+
+# Host-side defaults. Everything guest-facing is read from the compose file.
+BASE_FLAGS = [
+    "/dynamic-resolution",
+    "/sound:sys:pulse",
+    "/microphone:sys:pulse",
+    "+clipboard",
+    "/cert:ignore",
+]
+
+def _load_sibling(name, filename):
+    """Import a sibling script that has no .py extension."""
+    loader = SourceFileLoader(name, os.path.join(BIN_DIR, filename))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+# Compose parsing and the RDP handshake live in windows-status; sharing them
+# keeps one implementation of "where does the password come from".
+status = _load_sibling("windows_status", "windows-status")
+
+
+def build_argv(compose_path, extra):
+    env, ports = status.read_compose(compose_path)
+    username = str(env.get("USERNAME") or "").strip()
+    password = str(env.get("PASSWORD") or "").strip()
+    port = ports.get(3389, 3389)
+
+    argv = [CLIENT, "/v:127.0.0.1:%d" % port]
+    if username:
+        argv.append("/u:%s" % username)
+    if password:
+        argv.append("/p:%s" % password)
+    argv.extend(BASE_FLAGS)
+    argv.extend(extra)
+    return argv, port
+
+
+def wait_for_rdp(port, deadline):
+    while time.monotonic() < deadline:
+        if status.rdp_ready(port):
+            return True
+        time.sleep(2)
+    return status.rdp_ready(port)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compose", default=DEFAULT_COMPOSE, help="compose file to read")
+    parser.add_argument(
+        "--wait",
+        nargs="?",
+        type=int,
+        const=DEFAULT_WAIT,
+        default=0,
+        metavar="SECONDS",
+        help="block until Windows answers RDP (default %d s)" % DEFAULT_WAIT,
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the xfreerdp3 command line instead of running it",
+    )
+    parser.add_argument(
+        "extra", nargs=argparse.REMAINDER, help="further arguments passed to " + CLIENT
+    )
+    args = parser.parse_args()
+
+    extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+    compose_path = os.path.expanduser(args.compose)
+
+    try:
+        argv, port = build_argv(compose_path, extra)
+    except FileNotFoundError:
+        print("windows-rdp: no compose file at %s" % compose_path, file=sys.stderr)
+        return 1
+    except OSError as error:
+        print("windows-rdp: cannot read %s: %s" % (compose_path, error), file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print(" ".join(argv))
+        return 0
+
+    if args.wait and not wait_for_rdp(port, time.monotonic() + args.wait):
+        print("windows-rdp: no RDP answer on port %d after %d s" % (port, args.wait), file=sys.stderr)
+        return 1
+
+    try:
+        os.execvp(CLIENT, argv)
+    except OSError as error:
+        print("windows-rdp: cannot run %s: %s" % (CLIENT, error), file=sys.stderr)
+        return 127
+
+
+if __name__ == "__main__":
+    sys.exit(main())

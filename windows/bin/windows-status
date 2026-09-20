@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Report the state of a dockurr/windows container without touching Docker.
+
+The Docker socket is root-owned on this host, so every ``docker`` call has to go
+through ``pkexec`` and costs 1.5-4 s. Polling that once per bar tick is not an
+option, and none of it is actually necessary: everything the indicator needs is
+readable as an ordinary user.
+
+  * the VM itself is a ``qemu-system-x86_64`` process in a ``docker-*`` cgroup,
+    so /proc answers both "is it up" and "since when"
+  * a bound host port means the container is up even before QEMU launches --
+    that is the ISO-download / disk-prep window
+  * RDP readiness is an X.224 Connection Request. A plain listen check proves
+    nothing here: docker-proxy binds 3389 the instant the container starts, long
+    before Windows is in a state to answer.
+
+Ports and VM sizing come from the compose file, never from constants, so editing
+docker-compose.yml is enough to reconfigure both this script and the plugin.
+
+stdout is always exactly one JSON object. Exit 0 with ``{"ok": true, ...}``, or
+exit 1 with ``{"ok": false, "error": "no_compose"|"bad_compose", ...}``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import sys
+
+DEFAULT_COMPOSE = "~/Windows/docker-compose.yml"
+QEMU_MARKER = "qemu-system-x86_64"
+
+# TPKT header + X.224 Connection Request + RDP negotiation request (TLS|CredSSP).
+RDP_CONNECTION_REQUEST = bytes(
+    [0x03, 0x00, 0x00, 0x13]
+    + [0x0E, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00]
+    + [0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00]
+)
+X224_CONNECTION_CONFIRM = 0xD0
+
+
+# ----------------------------------------------------------------- compose
+
+def _ports_from_pairs(pairs):
+    """Map container port -> host port from "8006:8006" / "3389:3389/tcp"."""
+    ports = {}
+    for entry in pairs:
+        match = re.match(r"^\s*(?:[\d.]+:)?(\d+):(\d+)(?:/(\w+))?\s*$", str(entry))
+        if match is None:
+            continue
+        host, container, proto = match.group(1), match.group(2), match.group(3)
+        if proto in (None, "tcp"):
+            ports.setdefault(int(container), int(host))
+    return ports
+
+
+def _parse_with_yaml(text):
+    import yaml  # noqa: PLC0415 - optional, the regex path covers its absence
+
+    doc = yaml.safe_load(text)
+    services = (doc or {}).get("services") or {}
+    if not isinstance(services, dict) or not services:
+        raise ValueError("no services")
+    # The compose file names one service; take it, whatever it is called.
+    service = next(iter(services.values())) or {}
+    env = service.get("environment") or {}
+    if isinstance(env, list):
+        # "KEY=value" list form.
+        env = dict(
+            item.split("=", 1) for item in env if isinstance(item, str) and "=" in item
+        )
+    # A stray "VERSION:: 11" parses as the key "VERSION:" -- strip trailing colons
+    # so a typo in the compose file cannot hide a real key.
+    env = {str(k).rstrip(":").strip(): v for k, v in env.items()}
+    return env, _ports_from_pairs(service.get("ports") or [])
+
+
+def _parse_with_regex(text):
+    env = {}
+    for key, value in re.findall(
+        r"^[^\S\n]+(\w+):+[^\S\n]*[\"']?([^\"'\n]*?)[\"']?[^\S\n]*$",
+        text,
+        re.MULTILINE,
+    ):
+        env.setdefault(key, value)
+    ports = re.findall(r"^[^\S\n]*-[^\S\n]*([\d.:]+/?\w*)[^\S\n]*$", text, re.MULTILINE)
+    return env, _ports_from_pairs(ports)
+
+
+def read_compose(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    try:
+        env, ports = _parse_with_yaml(text)
+    except Exception:
+        env, ports = _parse_with_regex(text)
+    return env, ports
+
+
+# -------------------------------------------------------------------- proc
+
+def _read(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return b""
+
+
+def find_vm_process():
+    """Return the pid of the containerised QEMU, or None.
+
+    The cgroup check is what keeps an unrelated libvirt or GNOME Boxes VM from
+    lighting up the indicator. It matches "docker" loosely on purpose: the
+    systemd driver writes ``system.slice/docker-<id>.scope`` while cgroupfs
+    writes ``/docker/<id>``, and the QEMU cmdline gate already carries the
+    specificity. Matching goes through cmdline rather than ``pgrep -x``, because
+    /proc/<pid>/comm truncates at 15 characters and would only ever read
+    "qemu-system-x86".
+    """
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        cmdline = _read("/proc/%s/cmdline" % entry)
+        if QEMU_MARKER.encode() not in cmdline:
+            continue
+        if b"docker" not in _read("/proc/%s/cgroup" % entry):
+            continue
+        return int(entry)
+    return None
+
+
+def uptime_seconds(pid):
+    stat = _read("/proc/%d/stat" % pid).decode("utf-8", "replace")
+    # The comm field is parenthesised and may itself contain spaces.
+    tail = stat.rpartition(")")[2].split()
+    if len(tail) < 20:
+        return None
+    try:
+        start_ticks = int(tail[19])
+        hertz = os.sysconf("SC_CLK_TCK")
+        boot_relative = float(_read("/proc/uptime").split()[0])
+    except (ValueError, IndexError, OSError):
+        return None
+    return max(0, int(boot_relative - start_ticks / hertz))
+
+
+# ------------------------------------------------------------------ probes
+
+def tcp_open(port, timeout=0.5):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout):
+            return True
+    except OSError:
+        return False
+
+
+def rdp_ready(port, timeout=1.0):
+    """True only once Windows answers the RDP handshake.
+
+    docker-proxy accepts the connection as soon as the container exists, then
+    closes it when nothing is listening inside, so acceptance alone is not a
+    readiness signal -- the Connection Confirm is.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(RDP_CONNECTION_REQUEST)
+            reply = sock.recv(8)
+    except OSError:
+        return False
+    return len(reply) >= 6 and reply[0] == 0x03 and reply[5] == X224_CONNECTION_CONFIRM
+
+
+# -------------------------------------------------------------------- main
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compose", default=DEFAULT_COMPOSE, help="compose file to read")
+    parser.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="skip the TCP probes; report process state only",
+    )
+    args = parser.parse_args()
+
+    path = os.path.expanduser(args.compose)
+    out = {"ok": False, "compose": path, "running": False, "rdp_ready": False, "web_up": False}
+
+    try:
+        env, ports = read_compose(path)
+    except FileNotFoundError:
+        out["error"] = "no_compose"
+        print(json.dumps(out))
+        return 1
+    except OSError:
+        out["error"] = "bad_compose"
+        print(json.dumps(out))
+        return 1
+
+    rdp_port = ports.get(3389, 3389)
+    web_port = ports.get(8006, 8006)
+    out.update(
+        {
+            "ok": True,
+            "rdp_port": rdp_port,
+            "web_port": web_port,
+            "ram": str(env.get("RAM_SIZE") or "").strip() or None,
+            "cores": str(env.get("CPU_CORES") or "").strip() or None,
+            "username": str(env.get("USERNAME") or "").strip() or None,
+        }
+    )
+
+    pid = find_vm_process()
+    if pid is not None:
+        out["running"] = True
+        out["pid"] = pid
+        out["uptime_s"] = uptime_seconds(pid)
+
+    if not args.no_probe:
+        out["web_up"] = tcp_open(web_port)
+        # Only worth the handshake once the VM process exists.
+        out["rdp_ready"] = rdp_ready(rdp_port) if pid is not None else False
+
+    # running -> the VM process is up; web_up without it is the container's
+    # ISO-download / disk-prep window before QEMU launches.
+    if out["running"]:
+        out["state"] = "running" if out["rdp_ready"] else "booting"
+    elif out["web_up"]:
+        out["state"] = "preparing"
+    else:
+        out["state"] = "stopped"
+
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

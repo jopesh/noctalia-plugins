@@ -4,7 +4,7 @@
 -- dot-matrix SVG map.
 --
 -- Publishes: proton_vpn.data   (shape documented in README.md)
--- Commands:  proton_vpn.cmd    (cleared to nil once handled, like winboat)
+-- Commands:  proton_vpn.cmd    (cleared to nil once handled, like johnschmidt/windows)
 -- IPC:       refresh | connect | disconnect
 --
 -- proton-vpn-cli burns ~0.7 s of CPU before it prints anything and always emits
