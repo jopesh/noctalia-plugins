@@ -70,13 +70,14 @@ world-readable anyway.
 
 `docker`, `pkexec`, `python3` and `xfreerdp3`.
 
-**A polkit authentication agent must be running.** polkit reports `auth_admin`
-for `org.freedesktop.policykit.exec` on this host, so `pkexec` needs an agent to
-collect the password; with none, it blocks forever rather than failing. The
-plugin bounds the call with `timeout` and reports "no polkit authentication
-agent is running" instead of freezing, but start and stop cannot work until an
-agent exists. Status, Connect and the web console need no privileges and work
-regardless.
+polkit answers `auth_admin` for `org.freedesktop.policykit.exec` here, so Start
+and Stop raise a password prompt through Noctalia's own polkit agent. polkit
+caches the authorization for about five minutes, so a start followed later by a
+stop usually prompts once. An unanswered prompt would block `pkexec` forever, so
+the call is bounded by `timeout` and reported rather than left to freeze the bar.
+
+Status, Connect and the web console need no privileges at all and work whether or
+not the prompt is answered.
 
 ## IPC
 

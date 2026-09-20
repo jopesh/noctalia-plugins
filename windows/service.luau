@@ -180,9 +180,11 @@ local function control(op, onDone)
   publish()
 
   local action = op == "start" and "up -d" or "stop"
-  -- pkexec blocks indefinitely when authentication is required and no polkit
-  -- agent is running to answer it, which from here looks like a frozen bar.
-  -- `timeout` turns that into exit 124 and a message that names the cause.
+  -- polkit answers auth_admin for exec, so pkexec raises a password prompt
+  -- through noctalia's own agent and blocks until it is answered. Unanswered,
+  -- that is an indefinite hang; `timeout` turns it into exit 124 and a message
+  -- that says what went unanswered. An authorization is cached for ~5 minutes,
+  -- so a start followed by a stop usually prompts only once.
   local limit = op == "start" and START_TIMEOUT_S or STOP_TIMEOUT_S
   local command = "timeout " .. limit .. " pkexec /usr/bin/docker compose -f "
     .. sh(composePath()) .. " " .. action

@@ -34,7 +34,7 @@
     "no_plugin_dir": "Could not locate the plugin directory",
     "no_status_bin": "Could not run bin/windows-status",
     "no_pkexec": "Could not launch pkexec",
-    "no_agent": "pkexec never answered — no polkit authentication agent is running",
+    "no_agent": "The polkit password prompt went unanswered",
     "not_authorized": "Authorization refused by polkit",
     "command_failed": "docker compose {op} failed",
     "not_running": "Windows is not running",
