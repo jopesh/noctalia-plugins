@@ -46,7 +46,7 @@ placement = "attached"
 position = "auto"
 open_near_click = true
 keyboard_focus = "on_demand"
-capture_keys = ["j", "k", "Up", "Down", "Return", "s", "d", "o", "r"]
+capture_keys = ["j", "k", "Up", "Down", "Return", "s", "d", "o", "r", "t"]
 
 [[service]]
 id = "service"

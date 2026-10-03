@@ -9,12 +9,20 @@ local function cfg(key, fallback)
 end
 
 local function render()
-  local color = (data.lastError ~= nil and data.lastError ~= "") and "error" or "on_surface"
+  local busy = data.applying or data.shuffling or data.saving
+  local color = "on_surface"
+  if data.lastError ~= nil and data.lastError ~= "" then
+    color = "error"
+  elseif busy then
+    color = "primary"
+  end
   local container = barWidget.isVertical() and ui.column or ui.row
   barWidget.render(container({ gap = 6, align = "center" }, {
     ui.glyph({ name = cfg("glyph", "photo"), size = 16, color = color }),
   }))
-  if data.current ~= nil then
+  if data.lastError ~= nil and data.lastError ~= "" then
+    barWidget.setTooltip(data.lastError)
+  elseif data.current ~= nil then
     barWidget.setTooltip(data.current.name .. "\n" .. data.current.artist)
   else
     barWidget.clearTooltip()

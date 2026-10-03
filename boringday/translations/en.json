@@ -13,7 +13,8 @@
     "shuffle": "Shuffle",
     "save": "Save copy",
     "open": "Open page",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "on_wall": "On your wall"
   },
   "error": {
     "fetch": "Could not reach anotherboring.day",

@@ -10,10 +10,15 @@ M.API_TRIPLE = "https://service.anotherboring.day/api/wallpapers/raycast-triple"
 M.API_RANDOM = "https://service.anotherboring.day/api/wallpapers/random-human"
 M.ART_PAGE = "https://anotherboring.day/art/"
 
+-- The host's JSON codec; tools/model_test.luau swaps in a stub.
+M.json = noctalia ~= nil and noctalia.json or nil
+
 -- Everything off the network is treated as hostile, so every payload has a
 -- ceiling. Byte ceilings are enforced by curl mid-download; the rest here.
 M.MAX_JSON_CHARS = 256 * 1024
-M.MAX_STATE_CHARS = 64 * 1024
+-- The state file caches the last set, descriptions and all; JSON escaping can
+-- inflate non-ASCII text several times over.
+M.MAX_STATE_CHARS = 512 * 1024
 M.MAX_THUMB_BYTES = 8 * 1024 * 1024
 M.MAX_IMAGE_BYTES = 64 * 1024 * 1024
 M.MAX_ID_CHARS = 64
@@ -27,7 +32,7 @@ M.MAX_RECENT = 10
 
 -- ----------------------------------------------------------------- sanitizing
 
-local function cut(s, max)
+local function cut(s: string, max: number): string
   if #s <= max then
     return s
   end
@@ -143,7 +148,7 @@ local function decode(text, maxChars)
   if type(text) ~= "string" or #text > maxChars then
     return nil
   end
-  return noctalia.json.decode(text)
+  return M.json.decode(text)
 end
 
 -- The triple endpoint returns { today, random = [...] }. Today comes first.
@@ -239,10 +244,18 @@ function M.pushRecent(ids, id, cap)
   return out
 end
 
--- A corrupt or absent state file degrades to empty state. `current` goes
--- through normalize() like a fresh API record: it is handed to curl.
+local function restore(raw)
+  local piece = M.normalize(raw)
+  if piece then
+    piece.isToday = raw.isToday == true
+  end
+  return piece
+end
+
+-- A corrupt or absent state file degrades to empty state. Every cached piece
+-- goes through normalize() like a fresh API record: it is handed to curl.
 function M.parseState(text)
-  local empty = { recentIds = {}, current = nil }
+  local empty = { recentIds = {}, current = nil, pieces = {}, fetchedDay = "" }
   local ok, json = pcall(decode, text, M.MAX_STATE_CHARS)
   if not ok or type(json) ~= "table" then
     return empty
@@ -256,14 +269,27 @@ function M.parseState(text)
       table.insert(ids, v)
     end
   end
-  return { recentIds = ids, current = M.normalize(json.current) }
+  local pieces = {}
+  for _, raw in ipairs(type(json.pieces) == "table" and json.pieces or {}) do
+    if #pieces >= M.MAX_PIECES then
+      break
+    end
+    local piece = restore(raw)
+    if piece then
+      table.insert(pieces, piece)
+    end
+  end
+  local day = type(json.fetchedDay) == "string" and json.fetchedDay:match("^%d%d%d%d%-%d%d%-%d%d$") or ""
+  return { recentIds = ids, current = M.normalize(json.current), pieces = pieces, fetchedDay = day }
 end
 
 function M.stateJson(state)
-  return noctalia.json.encode({
+  return M.json.encode({
     version = 2,
     recentIds = state.recentIds or {},
     current = state.current,
+    pieces = state.pieces or {},
+    fetchedDay = state.fetchedDay or "",
   })
 end
 

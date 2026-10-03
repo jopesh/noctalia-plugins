@@ -6,15 +6,32 @@
 local model = require("./model.luau")
 
 local data = noctalia.state.get("boringday.data") or {}
-local selected = 1
+-- The selection follows a piece, not a row: the list can change under it
+-- (a refresh, a shuffled piece joining) without the cursor jumping.
+local selectedId = nil
+local lastCurrentId = nil
 local render
 
 local function pieces()
   return type(data.pieces) == "table" and data.pieces or {}
 end
 
-local function current()
-  return pieces()[selected]
+local function currentId()
+  return data.current ~= nil and data.current.id or nil
+end
+
+local function selectedIndex()
+  local list = pieces()
+  for i, piece in ipairs(list) do
+    if piece.id == selectedId then
+      return i
+    end
+  end
+  return #list > 0 and 1 or 0
+end
+
+local function selection()
+  return pieces()[selectedIndex()]
 end
 
 local function command(op, extra)
@@ -34,7 +51,7 @@ local function heroLine()
 end
 
 local function isApplied(piece)
-  return data.current ~= nil and piece ~= nil and data.current.id == piece.id
+  return piece ~= nil and currentId() == piece.id
 end
 
 local function preview(piece)
@@ -50,14 +67,13 @@ local function preview(piece)
   })
 end
 
-local function pieceRow(index, piece)
-  local active = index == selected
+local function pieceRow(piece, active)
   local mark = piece.isToday and noctalia.tr("today") or ""
   return ui.row({
     key = "piece:" .. piece.id,
     gap = 8, align = "center", paddingH = 8, paddingV = 6, radius = 8,
     fill = active and "primary/0.16" or "on_surface_variant/0.06",
-    onClick = function() selected = index render() end,
+    onClick = function() selectedId = piece.id render() end,
   }, {
     ui.column({ gap = 1, flexGrow = 1 }, {
       ui.label({ text = piece.name, fontSize = 12, fontWeight = "bold", maxLines = 1 }),
@@ -69,19 +85,48 @@ local function pieceRow(index, piece)
   })
 end
 
+local function actions(piece)
+  local busy = data.applying == true
+  local applied = isApplied(piece)
+  return ui.row({ gap = 6, align = "center" }, {
+    ui.button({
+      text = noctalia.tr(applied and "action.on_wall" or "action.set"),
+      glyph = applied and "check" or "photo-check",
+      variant = "primary", controlSize = "sm", flexGrow = 2,
+      enabled = piece ~= nil and not busy and not applied,
+      onClick = function() command("set", { id = piece.id }) end,
+    }),
+    ui.button({
+      glyph = "arrows-shuffle", variant = "filled", controlSize = "sm", tooltip = noctalia.tr("action.shuffle"),
+      enabled = data.shuffling ~= true, onClick = function() command("shuffle") end,
+    }),
+    ui.button({
+      glyph = "download", variant = "outline", controlSize = "sm", tooltip = noctalia.tr("action.save"),
+      enabled = piece ~= nil and data.saving ~= true, onClick = function() command("save", { id = piece.id }) end,
+    }),
+    ui.button({
+      glyph = "external-link", variant = "outline", controlSize = "sm", tooltip = noctalia.tr("action.open"),
+      enabled = piece ~= nil, onClick = function() command("open", { id = piece.id }) end,
+    }),
+    ui.button({
+      glyph = "refresh", variant = "outline", controlSize = "sm", tooltip = noctalia.tr("action.refresh"),
+      enabled = data.fetching ~= true, onClick = function() command("refresh") end,
+    }),
+  })
+end
+
 render = function()
   local list = pieces()
-  if selected > #list then
-    selected = math.max(1, #list)
-  end
-  local piece = current()
+  local piece = selection()
+  selectedId = piece and piece.id or nil
   local line, lineColor = heroLine()
   local rows = {}
-  for i, p in ipairs(list) do
-    table.insert(rows, pieceRow(i, p))
+  for _, p in ipairs(list) do
+    table.insert(rows, pieceRow(p, p.id == selectedId))
   end
   if #rows == 0 then
-    table.insert(rows, ui.label({ text = noctalia.tr("no_pieces"), color = "on_surface_variant", fontSize = 11 }))
+    local empty = data.fetching and noctalia.tr("loading") or noctalia.tr("no_pieces")
+    table.insert(rows, ui.label({ text = empty, color = "on_surface_variant", fontSize = 11 }))
   end
 
   local tags = {}
@@ -108,38 +153,17 @@ render = function()
       }),
     }),
     ui.column({ gap = 4 }, rows),
-    ui.row({ gap = 6, align = "center" }, {
-      ui.button({
-        text = noctalia.tr("action.set"), glyph = "photo-check", variant = "primary", controlSize = "sm",
-        flexGrow = 2, enabled = piece ~= nil and data.applying ~= true,
-        onClick = function() command("set", { id = piece.id }) end,
-      }),
-      ui.button({
-        glyph = "arrows-shuffle", variant = "filled", controlSize = "sm", tooltip = noctalia.tr("action.shuffle"),
-        enabled = data.applying ~= true, onClick = function() command("shuffle") end,
-      }),
-      ui.button({
-        glyph = "download", variant = "outline", controlSize = "sm", tooltip = noctalia.tr("action.save"),
-        enabled = piece ~= nil, onClick = function() command("save", { id = piece.id }) end,
-      }),
-      ui.button({
-        glyph = "external-link", variant = "outline", controlSize = "sm", tooltip = noctalia.tr("action.open"),
-        enabled = piece ~= nil, onClick = function() command("open", { id = piece.id }) end,
-      }),
-      ui.button({
-        glyph = "refresh", variant = "outline", controlSize = "sm", tooltip = noctalia.tr("action.refresh"),
-        onClick = function() command("refresh") end,
-      }),
-    }),
+    actions(piece),
   }
 
   panel.render(ui.scroll({ flexGrow = 1, padding = 12, gap = 10, align = "stretch" }, body))
 end
 
 local function step(delta)
-  local count = #pieces()
-  if count > 0 then
-    selected = ((selected - 1 + delta) % count) + 1
+  local list = pieces()
+  if #list > 0 then
+    local index = ((selectedIndex() - 1 + delta) % #list) + 1
+    selectedId = list[index].id
     render()
   end
 end
@@ -148,13 +172,15 @@ function onKey(chord, pressed)
   if not pressed then
     return
   end
-  local piece = current()
+  local piece = selection()
   if chord == "j" or chord == "Down" then
     step(1)
   elseif chord == "k" or chord == "Up" then
     step(-1)
-  elseif chord == "Return" and piece then
+  elseif chord == "Return" and piece and not isApplied(piece) then
     command("set", { id = piece.id })
+  elseif chord == "t" then
+    command("today")
   elseif chord == "s" then
     command("shuffle")
   elseif chord == "d" and piece then
@@ -166,9 +192,11 @@ function onKey(chord, pressed)
   end
 end
 
+-- Opening the panel lands on what is on the wall.
 function onOpen(_context)
   data = noctalia.state.get("boringday.data") or data
-  selected = 1
+  selectedId = currentId()
+  lastCurrentId = selectedId
   render()
 end
 
@@ -178,8 +206,20 @@ function onIpc(event, _payload)
   end
 end
 
+-- When the wallpaper changes (a shuffle, the command line) the cursor
+-- follows it, so the preview shows what just went up.
 noctalia.state.watch("boringday.data", function(value)
-  if type(value) == "table" then data = value render() end
+  if type(value) == "table" then
+    data = value
+    local id = currentId()
+    if id ~= lastCurrentId then
+      lastCurrentId = id
+      selectedId = id
+    end
+    render()
+  end
 end)
 
+selectedId = currentId()
+lastCurrentId = selectedId
 render()

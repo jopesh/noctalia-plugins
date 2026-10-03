@@ -5,12 +5,18 @@
 
 local model = require("./model.luau")
 
--- Only clears the transient status line, so it can be short and cheap.
+-- Clears the transient status line and notices a new calendar day; both are
+-- a couple of comparisons, so the tick can be short.
 local TICK_MS = 1000
 local PIECE_LIMIT = 3
 local SHUFFLE_ATTEMPTS = 4
 local KEEP_WALLPAPERS = 20
 local KEEP_THUMBS = 60
+local FLASH_SECONDS = 6
+-- After a failed fetch of today's set, try again on this schedule (doubling)
+-- so a shell started offline catches up without anyone clicking refresh.
+local RETRY_MIN_SECONDS = 60
+local RETRY_MAX_SECONDS = 1800
 
 local data = {
   pieces = {},
@@ -19,18 +25,21 @@ local data = {
   status = "",
   lastError = "",
   applying = false,
+  fetching = false,
+  shuffling = false,
+  saving = false,
 }
 
-local state = { recentIds = {}, current = nil }
+local state = { recentIds = {}, current = nil, pieces = {}, fetchedDay = "" }
 local dataDir, wallpaperDir, thumbDir, statePath
 local pendingApply = nil
 local pendingToday = nil
-local fetching = false
-local shuffling = false
-local saving = false
 local thumbQueue = {}
 local thumbBusy = false
 local statusClearAt = 0
+local retryAt = 0
+local retryDelay = RETRY_MIN_SECONDS
+local shownDay = ""
 
 local function sh(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
@@ -39,6 +48,10 @@ end
 local function cfg(key, fallback)
   local value = noctalia.getConfig(key)
   return value == nil and fallback or value
+end
+
+local function today()
+  return noctalia.formatTime("%Y-%m-%d")
 end
 
 local function publish()
@@ -55,14 +68,26 @@ end
 
 local function flash(text)
   data.status = text
-  statusClearAt = os.time() + 6
+  statusClearAt = os.time() + FLASH_SECONDS
   publish()
 end
 
-local function fail(text)
+-- A failure from the command line has nobody watching the panel, so it also
+-- raises a notification; one from the panel is shown there.
+local function fail(text, reason)
   data.status = ""
   statusClearAt = 0
   data.lastError = text
+  publish()
+  if reason == "cli" then
+    noctalia.notifyError(noctalia.tr("title"), text)
+  end
+end
+
+local function begin(text)
+  data.lastError = ""
+  data.status = text
+  statusClearAt = 0
   publish()
 end
 
@@ -88,6 +113,8 @@ fetch_image() {
 }
 ]]
 
+-- Oldest first, never `spare`, and never a download still in flight (its
+-- temp file is the newest thing in the directory, so it sorts last anyway).
 local function prune(dir, keep, spare)
   local names = noctalia.listDir(dir)
   if type(names) ~= "table" or #names <= keep then
@@ -107,38 +134,41 @@ local function prune(dir, keep, spare)
   end
 end
 
--- ------------------------------------------------------------- thumbnails
+local function wallpaperPath(piece)
+  return wallpaperDir .. "/" .. piece.id .. model.extensionFor(piece.url)
+end
 
-local pumpThumbs
+-- ------------------------------------------------------------- thumbnails
 
 local function thumbPath(piece)
   return thumbDir .. "/" .. piece.id .. model.extensionFor(piece.thumbnailUrl)
 end
 
-pumpThumbs = function()
-  if thumbBusy or #thumbQueue == 0 then
-    return
-  end
-  local piece = table.remove(thumbQueue, 1)
-  local dest = thumbPath(piece)
-  if noctalia.fileExists(dest) then
-    data.thumbs[piece.id] = dest
-    publish()
-    return pumpThumbs()
-  end
-  thumbBusy = true
-  local limit = piece.thumbnailIsOriginal and model.MAX_IMAGE_BYTES or model.MAX_THUMB_BYTES
-  local command = FETCH .. "fetch_image " .. sh(piece.thumbnailUrl) .. " " .. sh(dest) .. " " .. limit
-  local started = noctalia.runAsync(command, function(result)
-    thumbBusy = false
-    if result ~= nil and result.exitCode == 0 then
+local function pumpThumbs()
+  while not thumbBusy and #thumbQueue > 0 do
+    local piece = table.remove(thumbQueue, 1)
+    local dest = thumbPath(piece)
+    if noctalia.fileExists(dest) then
       data.thumbs[piece.id] = dest
       publish()
+    else
+      thumbBusy = true
+      local limit = piece.thumbnailIsOriginal and model.MAX_IMAGE_BYTES or model.MAX_THUMB_BYTES
+      local command = FETCH .. "fetch_image " .. sh(piece.thumbnailUrl) .. " " .. sh(dest) .. " " .. limit
+      local started = noctalia.runAsync(command, function(result)
+        thumbBusy = false
+        if result ~= nil and result.exitCode == 0 then
+          data.thumbs[piece.id] = dest
+          publish()
+        end
+        pumpThumbs()
+      end, 150000)
+      if not started then
+        -- The host would not start a process; the next refresh tries again.
+        thumbBusy = false
+        thumbQueue = {}
+      end
     end
-    pumpThumbs()
-  end, 150000)
-  if not started then
-    thumbBusy = false
   end
 end
 
@@ -185,53 +215,73 @@ local function ensureCurrentListed()
   table.insert(data.pieces, cur)
 end
 
+-- The set is cached with the day it was fetched for. Once that day has
+-- passed its first piece is no longer today's, so the flag comes off rather
+-- than the panel calling yesterday "Today".
+local function showSet(pieces, day)
+  shownDay = today()
+  local stale = day ~= shownDay
+  local list = {}
+  for i = 1, math.min(#pieces, PIECE_LIMIT) do
+    local piece = table.clone(pieces[i])
+    if stale then
+      piece.isToday = false
+    end
+    table.insert(list, piece)
+  end
+  data.pieces = list
+  ensureCurrentListed()
+end
+
 local apply
 
-local function refresh()
-  if fetching then
+local function refresh(reason)
+  if data.fetching then
     return
   end
-  fetching = true
-  data.lastError = ""
-  data.status = noctalia.tr("loading")
-  publish()
+  data.fetching = true
+  begin(noctalia.tr("loading"))
+  local function failed(text)
+    data.fetching = false
+    retryAt = os.time() + retryDelay
+    retryDelay = math.min(retryDelay * 2, RETRY_MAX_SECONDS)
+    local waiting = pendingToday
+    pendingToday = nil
+    fail(text, waiting or reason)
+  end
   local started = noctalia.http({ url = model.API_TRIPLE, method = "GET" }, function(res)
-    fetching = false
-    data.status = ""
     if res == nil or not res.ok or res.status ~= 200 then
-      pendingToday = nil
-      return fail(noctalia.tr("error.fetch"))
+      return failed(noctalia.tr("error.fetch"))
     end
     local ok, pieces = pcall(model.parseTriple, res.body or "")
     if not ok or #pieces == 0 then
-      pendingToday = nil
-      return fail(noctalia.tr("error.unreadable"))
+      return failed(noctalia.tr("error.unreadable"))
     end
+    data.fetching = false
+    data.status = ""
+    retryAt = 0
+    retryDelay = RETRY_MIN_SECONDS
     while #pieces > PIECE_LIMIT do
       table.remove(pieces)
     end
-    data.pieces = pieces
-    ensureCurrentListed()
+    state.pieces = pieces
+    state.fetchedDay = today()
+    persist()
+    showSet(pieces, state.fetchedDay)
     publish()
     fetchThumbnails()
-    local reason = pendingToday
+    local waiting = pendingToday
     pendingToday = nil
-    if reason ~= nil and pieces[1].isToday then
-      apply(pieces[1], reason)
+    if waiting ~= nil and pieces[1].isToday then
+      apply(pieces[1], waiting)
     end
   end)
   if not started then
-    fetching = false
-    pendingToday = nil
-    fail(noctalia.tr("error.fetch"))
+    failed(noctalia.tr("error.fetch"))
   end
 end
 
 -- ------------------------------------------------------------------ apply
-
-local function notifyChange(piece)
-  noctalia.notify(piece.name, model.subtitle(piece))
-end
 
 local function recordApplied(piece, reason)
   state.current = piece
@@ -245,7 +295,7 @@ local function recordApplied(piece, reason)
   -- A click in the panel gets its feedback from the panel; notify only for
   -- changes nobody is looking at.
   if cfg("notify", true) == true and reason == "cli" then
-    notifyChange(piece)
+    noctalia.notify(piece.name, model.subtitle(piece))
   end
 end
 
@@ -254,20 +304,19 @@ apply = function(piece, reason)
     return
   end
   if wallpaperDir == nil then
-    return fail(noctalia.tr("error.data_dir"))
+    return fail(noctalia.tr("error.data_dir"), reason)
   end
   if data.applying then
     pendingApply = { piece = piece, reason = reason }
     return
   end
-  local out = wallpaperDir .. "/" .. piece.id .. model.extensionFor(piece.url)
+  local out = wallpaperPath(piece)
   if out:find("%s") then
-    return fail(noctalia.tr("error.set"))
+    return fail(noctalia.tr("error.set"), reason)
   end
   data.applying = true
-  data.lastError = ""
-  data.status = noctalia.tr("setting", { name = piece.name })
-  publish()
+  begin(noctalia.tr("setting", { name = piece.name }))
+  -- A cached copy is reused; touching it keeps prune() off what is on the wall.
   local script = FETCH
     .. "set -e\n"
     .. "out=" .. sh(out) .. "\n"
@@ -281,8 +330,7 @@ apply = function(piece, reason)
       recordApplied(piece, reason)
       prune(wallpaperDir, KEEP_WALLPAPERS, out)
     else
-      data.lastError = noctalia.tr("error.set")
-      publish()
+      fail(noctalia.tr("error.set"), reason)
     end
     local queued = pendingApply
     pendingApply = nil
@@ -292,19 +340,18 @@ apply = function(piece, reason)
   end, 300000)
   if not started then
     data.applying = false
-    data.status = ""
-    fail(noctalia.tr("error.set"))
+    fail(noctalia.tr("error.set"), reason)
   end
 end
 
 -- Before today's set has loaded, fetch it and set today's piece once it lands.
 local function applyToday(reason)
-  local today = data.pieces[1]
-  if today ~= nil and today.isToday then
-    apply(today, reason)
+  local first = data.pieces[1]
+  if first ~= nil and first.isToday and state.fetchedDay == today() then
+    apply(first, reason)
   else
     pendingToday = reason
-    refresh()
+    refresh(reason)
   end
 end
 
@@ -318,41 +365,37 @@ local function seen(id)
 end
 
 -- Ask the random endpoint, retrying a few times if it hands back something we
--- just set.
+-- just set. A shuffle that lands while another piece is being set queues
+-- behind it rather than being dropped.
 local function shuffle(reason)
-  if shuffling or data.applying then
+  if data.shuffling then
     return
   end
-  shuffling = true
-  data.lastError = ""
-  data.status = noctalia.tr("finding")
-  publish()
+  data.shuffling = true
+  begin(noctalia.tr("finding"))
   local attempts = 0
   local function ask()
-    attempts = attempts + 1
+    attempts += 1
     local started = noctalia.http({ url = model.API_RANDOM, method = "GET" }, function(res)
       if res == nil or not res.ok or res.status ~= 200 then
-        shuffling = false
-        data.status = ""
-        return fail(noctalia.tr("error.fetch"))
+        data.shuffling = false
+        return fail(noctalia.tr("error.fetch"), reason)
       end
       local ok, piece = pcall(model.parseOne, res.body or "")
       if not ok or piece == nil then
-        shuffling = false
-        data.status = ""
-        return fail(noctalia.tr("error.unreadable"))
+        data.shuffling = false
+        return fail(noctalia.tr("error.unreadable"), reason)
       end
       if seen(piece.id) and attempts < SHUFFLE_ATTEMPTS then
         return ask()
       end
-      shuffling = false
+      data.shuffling = false
       data.status = ""
       apply(piece, reason)
     end)
     if not started then
-      shuffling = false
-      data.status = ""
-      fail(noctalia.tr("error.fetch"))
+      data.shuffling = false
+      fail(noctalia.tr("error.fetch"), reason)
     end
   end
   ask()
@@ -360,37 +403,43 @@ end
 
 -- --------------------------------------------------------- save / open
 
-local function savePiece(piece)
-  if piece == nil or saving then
+-- The wallpaper cache usually already holds the full image (it is on the
+-- wall, or was recently), so a save is a local copy; otherwise it downloads.
+local function savePiece(piece, reason)
+  if piece == nil or data.saving then
     return
   end
-  saving = true
-  data.lastError = ""
-  data.status = noctalia.tr("saving", { name = piece.name })
-  statusClearAt = 0
-  publish()
+  data.saving = true
+  begin(noctalia.tr("saving", { name = piece.name }))
+  local cached = wallpaperDir ~= nil and wallpaperPath(piece) or ""
   local script = FETCH
     .. "set -e\n"
     .. "name=" .. sh(model.downloadName(piece)) .. "\n"
+    .. "cached=" .. sh(cached) .. "\n"
     .. "dir=$(xdg-user-dir PICTURES 2>/dev/null || true)\n"
     .. "if [ -z \"${dir:-}\" ] || [ \"$dir\" = \"$HOME\" ]; then dir=\"$HOME/Pictures\"; fi\n"
     .. "mkdir -p \"$dir\"\n"
     .. "out=\"$dir/$name\"; n=2\n"
     .. "while [ -e \"$out\" ]; do out=\"$dir/${name%.*}-$n.${name##*.}\"; n=$((n + 1)); done\n"
-    .. "fetch_image " .. sh(piece.url) .. " \"$out\" " .. model.MAX_IMAGE_BYTES .. "\n"
+    .. "if [ -n \"$cached\" ] && [ -s \"$cached\" ]; then cp -- \"$cached\" \"$out\"\n"
+    .. "else fetch_image " .. sh(piece.url) .. " \"$out\" " .. model.MAX_IMAGE_BYTES .. "; fi\n"
     .. "printf '%s' \"$out\"\n"
   local started = noctalia.runAsync(script, function(result)
-    saving = false
+    data.saving = false
     local path = noctalia.string.trim(result ~= nil and result.stdout or "")
     if result ~= nil and result.exitCode == 0 and path ~= "" then
-      flash(noctalia.tr("saved", { path = path:sub(1, 400) }))
+      path = path:sub(1, 400)
+      flash(noctalia.tr("saved", { path = path }))
+      if reason == "cli" then
+        noctalia.notify(noctalia.tr("title"), noctalia.tr("saved", { path = path }))
+      end
     else
-      fail(noctalia.tr("error.save"))
+      fail(noctalia.tr("error.save"), reason)
     end
   end, 180000)
   if not started then
-    saving = false
-    fail(noctalia.tr("error.save"))
+    data.saving = false
+    fail(noctalia.tr("error.save"), reason)
   end
 end
 
@@ -412,11 +461,25 @@ local function findPiece(id)
   return nil
 end
 
+-- ------------------------------------------------------------------ tick
+
+-- A new calendar day means a new piece of the day: yesterday's loses its
+-- "Today" mark at once (even offline), and today's set is fetched, retried on
+-- a backoff if that fails.
 function update()
-  if statusClearAt > 0 and os.time() >= statusClearAt then
+  local now = os.time()
+  if statusClearAt > 0 and now >= statusClearAt then
     statusClearAt = 0
     data.status = ""
     publish()
+  end
+  if dataDir ~= nil and shownDay ~= today() then
+    showSet(state.pieces, state.fetchedDay)
+    publish()
+    fetchThumbnails()
+  end
+  if dataDir ~= nil and not data.fetching and state.fetchedDay ~= today() and now >= retryAt then
+    refresh(nil)
   end
 end
 
@@ -425,7 +488,7 @@ end
 local function command(cmd)
   local op = cmd.op
   if op == "refresh" then
-    refresh()
+    refresh(nil)
   elseif op == "set" then
     apply(findPiece(cmd.id), "set")
   elseif op == "shuffle" then
@@ -433,7 +496,7 @@ local function command(cmd)
   elseif op == "today" then
     applyToday("today")
   elseif op == "save" then
-    savePiece(findPiece(cmd.id))
+    savePiece(findPiece(cmd.id), "save")
   elseif op == "open" then
     openPage(findPiece(cmd.id) or state.current)
   end
@@ -453,10 +516,17 @@ function onIpc(event, _payload)
   elseif event == "today" then
     applyToday("cli")
   elseif event == "refresh" then
-    refresh()
+    refresh("cli")
+  elseif event == "save" then
+    savePiece(state.current, "cli")
+  elseif event == "open" then
+    openPage(state.current)
   end
 end
 
+-- The last fetched set is shown straight away, with whatever thumbnails are
+-- already on disk, so the panel is useful before (or without) the network.
+-- If it is not today's, the first tick fetches today's.
 local function init()
   dataDir = noctalia.pluginDataDir()
   if dataDir == nil then
@@ -473,9 +543,9 @@ local function init()
   if type(text) == "string" then
     state = model.parseState(text)
   end
-  data.current = state.current
+  showSet(state.pieces, state.fetchedDay)
   publish()
-  refresh()
+  fetchThumbnails()
 end
 
 noctalia.setUpdateInterval(TICK_MS)
