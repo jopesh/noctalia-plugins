@@ -8,6 +8,7 @@ Personal [Noctalia](https://noctalia.dev) plugin source.
 | [`agents`](agents/) | One bar icon and one panel for every AI coding subscription — limits, prepaid balance, tokens by day and by model. A port of [omarchy's Quickshell `agents` plugin](https://github.com/basecamp/omarchy/tree/quattro/shell/plugins/agents) |
 | [`winboat`](winboat/) | WinBoat Docker/Podman container status with start and stop controls |
 | [`proton-vpn`](proton-vpn/) | Proton VPN status, a dot-matrix world map, and one-click connect by country or city |
+| [`boringday`](boringday/) | Fine art from anotherboring.day as your wallpaper — today's piece plus two more, one-click set, optional rotation. A port of [omarchy-boringday](https://github.com/jopesh/omarchy-boringday) |
 
 Both read Anthropic's OAuth usage endpoint, so running both doubles the request
 rate against an endpoint that rate-limits hard. They are otherwise independent:

@@ -1,0 +1,43 @@
+{
+  "title": "Another Boring Piece",
+  "tagline": "Daily fine art, hand-picked",
+  "today": "Today",
+  "finding": "Finding a piece…",
+  "setting": "Setting {name}…",
+  "saving": "Saving {name}…",
+  "saved": "Saved to {path}",
+  "loading": "Fetching today's set…",
+  "no_pieces": "No pieces yet",
+  "action": {
+    "set": "Set background",
+    "shuffle": "Shuffle",
+    "save": "Save copy",
+    "open": "Open page",
+    "refresh": "Refresh"
+  },
+  "rotation": {
+    "label": "Rotate automatically",
+    "every": "Every {period}"
+  },
+  "error": {
+    "fetch": "Could not reach anotherboring.day",
+    "unreadable": "anotherboring.day sent something unreadable",
+    "set": "Could not set that background",
+    "save": "Could not save that image"
+  },
+  "settings": {
+    "auto_rotate": {
+      "label": "Rotate automatically",
+      "description": "Pick a fresh piece on a schedule while the shell is running."
+    },
+    "interval_seconds": {
+      "label": "Rotation interval (seconds)",
+      "description": "The panel offers 1, 3, 12 and 24 hours (3600, 10800, 43200, 86400)."
+    },
+    "notify": {
+      "label": "Notify on change",
+      "description": "Send a notification naming the piece each time a rotation or IPC call changes the wallpaper."
+    },
+    "glyph": { "label": "Glyph" }
+  }
+}
