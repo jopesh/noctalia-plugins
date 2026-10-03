@@ -1,0 +1,53 @@
+# Another Boring Piece — fine art from anotherboring.day as your wallpaper.
+# A port of the Omarchy Quickshell plugin jopesh/omarchy-boringday.
+#
+#   [[service]]  owns every fetch, the caches and the `noctalia msg
+#                wallpaper-set` call; publishes boringday.data
+#   [[widget]]   the bar icon; right-click shuffles, middle-click refetches
+#   [[panel]]    today's piece plus two more, one click sets any of them
+
+id = "johnschmidt/boringday"
+name = "Another Boring Piece"
+version = "1.0.0"
+plugin_api = 23
+author = "johnschmidt"
+license = "MIT"
+dependencies = []
+tags = ["wallpaper", "art", "indicator", "panel"]
+icon = "photo"
+description = "Hand-picked fine art from anotherboring.day as your wallpaper."
+
+[[setting]]
+key = "notify"
+type = "bool"
+label_key = "settings.notify.label"
+description_key = "settings.notify.description"
+default = true
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+  [widget.actions]
+  middle = "none"
+
+  [[widget.setting]]
+  key = "glyph"
+  type = "glyph"
+  label_key = "settings.glyph.label"
+  default = "photo"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 380
+height = 560
+placement = "attached"
+position = "auto"
+open_near_click = true
+keyboard_focus = "on_demand"
+capture_keys = ["j", "k", "Up", "Down", "Return", "s", "d", "o", "r", "t"]
+
+[[service]]
+id = "service"
+entry = "service.luau"
