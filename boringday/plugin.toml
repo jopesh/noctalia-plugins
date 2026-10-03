@@ -1,8 +1,8 @@
 # Another Boring Piece — fine art from anotherboring.day as your wallpaper.
 # A port of the Omarchy Quickshell plugin jopesh/omarchy-boringday.
 #
-#   [[service]]  owns every fetch, the caches, the rotation schedule and the
-#                `noctalia msg wallpaper-set` call; publishes boringday.data
+#   [[service]]  owns every fetch, the caches and the `noctalia msg
+#                wallpaper-set` call; publishes boringday.data
 #   [[widget]]   the bar icon; right-click shuffles, middle-click refetches
 #   [[panel]]    today's piece plus two more, one click sets any of them
 
@@ -15,24 +15,7 @@ license = "MIT"
 dependencies = []
 tags = ["wallpaper", "art", "indicator", "panel"]
 icon = "photo"
-description = "Hand-picked fine art from anotherboring.day as your wallpaper, with optional rotation."
-
-[[setting]]
-key = "auto_rotate"
-type = "bool"
-label_key = "settings.auto_rotate.label"
-description_key = "settings.auto_rotate.description"
-default = false
-
-[[setting]]
-key = "interval_seconds"
-type = "int"
-label_key = "settings.interval_seconds.label"
-description_key = "settings.interval_seconds.description"
-default = 3600
-min = 300
-max = 86400
-step = 300
+description = "Hand-picked fine art from anotherboring.day as your wallpaper."
 
 [[setting]]
 key = "notify"
@@ -63,7 +46,7 @@ placement = "attached"
 position = "auto"
 open_near_click = true
 keyboard_focus = "on_demand"
-capture_keys = ["j", "k", "Up", "Down", "Return", "s", "d", "o", "r", "a", "i"]
+capture_keys = ["j", "k", "Up", "Down", "Return", "s", "d", "o", "r"]
 
 [[service]]
 id = "service"

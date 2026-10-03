@@ -2,18 +2,13 @@
 -- Pure helpers for the anotherboring.day plugin: endpoints, URL rewriting,
 -- response parsing and state (de)serialization. A port of Model.js from the
 -- Omarchy plugin. Nothing here talks to the host, so the fiddly parts —
--- thumbnail transforms, malformed payloads, an interval typed by hand — can be
--- reasoned about alone.
+-- thumbnail transforms, malformed payloads — can be reasoned about alone.
 
 local M = {}
 
 M.API_TRIPLE = "https://service.anotherboring.day/api/wallpapers/raycast-triple"
 M.API_RANDOM = "https://service.anotherboring.day/api/wallpapers/random-human"
 M.ART_PAGE = "https://anotherboring.day/art/"
-
-M.INTERVALS = { 3600, 10800, 43200, 86400 }
-M.MIN_INTERVAL = 300
-M.MAX_INTERVAL = 86400
 
 -- Everything off the network is treated as hostile, so every payload has a
 -- ceiling. Byte ceilings are enforced by curl mid-download; the rest here.
@@ -30,57 +25,6 @@ M.MAX_SCANNED_RECORDS = 32
 M.MAX_PIECES = 8
 M.MAX_RECENT = 10
 
-function M.clampInterval(seconds)
-  local n = tonumber(seconds)
-  if n == nil or n ~= n or n <= 0 or n == math.huge then
-    return 3600
-  end
-  return math.max(M.MIN_INTERVAL, math.min(M.MAX_INTERVAL, math.floor(n + 0.5)))
-end
-
-local function plural(count, unit)
-  return count .. " " .. unit .. (count == 1 and "" or "s")
-end
-
-function M.intervalLabel(seconds)
-  local n = M.clampInterval(seconds)
-  if n % 3600 == 0 then
-    return plural(n // 3600, "hour")
-  elseif n % 60 == 0 then
-    return plural(n // 60, "minute")
-  end
-  return plural(n, "second")
-end
-
--- Reads after "every": "every hour", not "every 1 hour".
-function M.everyLabel(seconds)
-  local n = M.clampInterval(seconds)
-  return n == 3600 and "hour" or M.intervalLabel(n)
-end
-
--- 0-based index of the preset, or -1 for a hand-typed value, so no chip is
--- selected rather than the wrong one.
-function M.intervalIndex(seconds)
-  local n = M.clampInterval(seconds)
-  for i, v in ipairs(M.INTERVALS) do
-    if v == n then
-      return i - 1
-    end
-  end
-  return -1
-end
-
--- An off-preset value snaps to the first preset larger than it.
-function M.nextInterval(seconds)
-  local n = M.clampInterval(seconds)
-  for _, v in ipairs(M.INTERVALS) do
-    if v > n then
-      return v
-    end
-  end
-  return M.INTERVALS[1]
-end
-
 -- ----------------------------------------------------------------- sanitizing
 
 local function cut(s, max)
@@ -88,9 +32,19 @@ local function cut(s, max)
     return s
   end
   s = s:sub(1, max)
-  -- Do not leave half a UTF-8 sequence at the end.
-  while #s > 0 and not utf8.len(s) do
-    s = s:sub(1, #s - 1)
+  -- Do not leave half a UTF-8 sequence at the end. Walk back over trailing
+  -- continuation bytes to the lead byte, and drop the sequence only when it
+  -- is incomplete.
+  local i = #s
+  while i > 1 and i > #s - 3 and s:byte(i) >= 0x80 and s:byte(i) < 0xC0 do
+    i -= 1
+  end
+  local lead = s:byte(i)
+  if lead >= 0xC0 then
+    local need = lead < 0xE0 and 2 or lead < 0xF0 and 3 or 4
+    if #s - i + 1 < need then
+      s = s:sub(1, i - 1)
+    end
   end
   return s
 end
@@ -139,7 +93,7 @@ function M.thumbnailUrl(url, width)
     return url:sub(1, a - 1) .. "/upload/w_" .. w .. ",c_limit,q_auto,f_auto/" .. url:sub(b + 1)
   end
   if url:find("imagedelivery.net", 1, true) then
-    local head, last = url:match("^(.*)/([^/]+)$")
+    local head = url:match("^(.*)/[^/]+$")
     if head then
       return head .. "/w=" .. w .. ",fit=contain"
     end
@@ -286,15 +240,13 @@ function M.pushRecent(ids, id, cap)
 end
 
 -- A corrupt or absent state file degrades to empty state. `current` goes
--- through normalize() like a fresh API record: it is handed to curl. A
--- timestamp in the future would park rotation, so it is clamped to now.
-function M.parseState(text, now)
-  local empty = { lastSwitchAt = 0, recentIds = {}, current = nil }
+-- through normalize() like a fresh API record: it is handed to curl.
+function M.parseState(text)
+  local empty = { recentIds = {}, current = nil }
   local ok, json = pcall(decode, text, M.MAX_STATE_CHARS)
   if not ok or type(json) ~= "table" then
     return empty
   end
-  local when = tonumber(json.lastSwitchAt) or 0
   local ids = {}
   for _, v in ipairs(type(json.recentIds) == "table" and json.recentIds or {}) do
     if #ids >= M.MAX_RECENT then
@@ -304,28 +256,14 @@ function M.parseState(text, now)
       table.insert(ids, v)
     end
   end
-  local state = {
-    lastSwitchAt = when > 0 and math.min(when, now) or 0,
-    recentIds = ids,
-    current = M.normalize(json.current),
-  }
-  if type(json.autoRotate) == "boolean" then
-    state.autoRotate = json.autoRotate
-  end
-  if tonumber(json.intervalSeconds) then
-    state.intervalSeconds = M.clampInterval(json.intervalSeconds)
-  end
-  return state
+  return { recentIds = ids, current = M.normalize(json.current) }
 end
 
 function M.stateJson(state)
   return noctalia.json.encode({
-    version = 1,
-    lastSwitchAt = tonumber(state.lastSwitchAt) or 0,
+    version = 2,
     recentIds = state.recentIds or {},
     current = state.current,
-    autoRotate = state.autoRotate,
-    intervalSeconds = state.intervalSeconds,
   })
 end
 

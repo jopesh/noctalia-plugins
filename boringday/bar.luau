@@ -9,10 +9,7 @@ local function cfg(key, fallback)
 end
 
 local function render()
-  local color = data.autoRotate and "primary" or "on_surface"
-  if data.lastError ~= nil and data.lastError ~= "" then
-    color = "error"
-  end
+  local color = (data.lastError ~= nil and data.lastError ~= "") and "error" or "on_surface"
   local container = barWidget.isVertical() and ui.column or ui.row
   barWidget.render(container({ gap = 6, align = "center" }, {
     ui.glyph({ name = cfg("glyph", "photo"), size = 16, color = color }),

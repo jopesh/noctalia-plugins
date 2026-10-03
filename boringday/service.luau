@@ -1,11 +1,12 @@
 --!nonstrict
--- Headless half of the plugin: owns every fetch, every download, the rotation
--- schedule and what is currently set. The bar widget and panel are views onto
--- it via boringday.data, so a rotation keeps running with the panel closed.
+-- Headless half of the plugin: owns every fetch, every download and what is
+-- currently set. The bar widget and panel are views onto it via
+-- boringday.data, so work started from the panel finishes with it closed.
 
 local model = require("./model.luau")
 
-local TICK_MS = 30000
+-- Only clears the transient status line, so it can be short and cheap.
+local TICK_MS = 1000
 local PIECE_LIMIT = 3
 local SHUFFLE_ATTEMPTS = 4
 local KEEP_WALLPAPERS = 20
@@ -18,14 +19,12 @@ local data = {
   status = "",
   lastError = "",
   applying = false,
-  autoRotate = false,
-  intervalSeconds = 3600,
-  nextAt = 0,
 }
 
-local state = { lastSwitchAt = 0, recentIds = {}, current = nil }
+local state = { recentIds = {}, current = nil }
 local dataDir, wallpaperDir, thumbDir, statePath
 local pendingApply = nil
+local pendingToday = nil
 local fetching = false
 local shuffling = false
 local saving = false
@@ -42,22 +41,8 @@ local function cfg(key, fallback)
   return value == nil and fallback or value
 end
 
-local function autoRotate()
-  if state.autoRotate ~= nil then
-    return state.autoRotate
-  end
-  return cfg("auto_rotate", false) == true
-end
-
-local function interval()
-  return model.clampInterval(state.intervalSeconds or cfg("interval_seconds", 3600))
-end
-
 local function publish()
-  data.autoRotate = autoRotate()
-  data.intervalSeconds = interval()
   data.current = state.current
-  data.nextAt = (data.autoRotate and state.lastSwitchAt > 0) and (state.lastSwitchAt + data.intervalSeconds) or 0
   noctalia.state.set("boringday.data", data)
 end
 
@@ -76,6 +61,7 @@ end
 
 local function fail(text)
   data.status = ""
+  statusClearAt = 0
   data.lastError = text
   publish()
 end
@@ -156,16 +142,27 @@ pumpThumbs = function()
   end
 end
 
+-- Only the listed pieces (and the current one) keep a thumbnail entry, so the
+-- published map stays small and never points at a file prune() removed.
 local function fetchThumbnails()
+  if thumbDir == nil then
+    return
+  end
+  local wanted = table.clone(data.pieces)
+  if state.current then
+    table.insert(wanted, state.current)
+  end
+  local thumbs, queued = {}, {}
   thumbQueue = {}
-  for _, piece in ipairs(data.pieces) do
-    if data.thumbs[piece.id] == nil then
+  for _, piece in ipairs(wanted) do
+    if data.thumbs[piece.id] ~= nil then
+      thumbs[piece.id] = data.thumbs[piece.id]
+    elseif not queued[piece.id] then
+      queued[piece.id] = true
       table.insert(thumbQueue, piece)
     end
   end
-  if state.current and data.thumbs[state.current.id] == nil then
-    table.insert(thumbQueue, state.current)
-  end
+  data.thumbs = thumbs
   pumpThumbs()
   prune(thumbDir, KEEP_THUMBS, nil)
 end
@@ -188,6 +185,8 @@ local function ensureCurrentListed()
   table.insert(data.pieces, cur)
 end
 
+local apply
+
 local function refresh()
   if fetching then
     return
@@ -200,10 +199,12 @@ local function refresh()
     fetching = false
     data.status = ""
     if res == nil or not res.ok or res.status ~= 200 then
+      pendingToday = nil
       return fail(noctalia.tr("error.fetch"))
     end
     local ok, pieces = pcall(model.parseTriple, res.body or "")
     if not ok or #pieces == 0 then
+      pendingToday = nil
       return fail(noctalia.tr("error.unreadable"))
     end
     while #pieces > PIECE_LIMIT do
@@ -213,16 +214,20 @@ local function refresh()
     ensureCurrentListed()
     publish()
     fetchThumbnails()
+    local reason = pendingToday
+    pendingToday = nil
+    if reason ~= nil and pieces[1].isToday then
+      apply(pieces[1], reason)
+    end
   end)
   if not started then
     fetching = false
+    pendingToday = nil
     fail(noctalia.tr("error.fetch"))
   end
 end
 
 -- ------------------------------------------------------------------ apply
-
-local apply
 
 local function notifyChange(piece)
   noctalia.notify(piece.name, model.subtitle(piece))
@@ -230,13 +235,16 @@ end
 
 local function recordApplied(piece, reason)
   state.current = piece
-  state.lastSwitchAt = os.time()
   state.recentIds = model.pushRecent(state.recentIds, piece.id, 5)
   persist()
+  -- A shuffled piece is not in today's set; list it so the panel shows what
+  -- is on the wall, with its thumbnail.
+  ensureCurrentListed()
   publish()
+  fetchThumbnails()
   -- A click in the panel gets its feedback from the panel; notify only for
   -- changes nobody is looking at.
-  if cfg("notify", true) == true and (reason == "auto" or reason == "cli") then
+  if cfg("notify", true) == true and reason == "cli" then
     notifyChange(piece)
   end
 end
@@ -244,6 +252,9 @@ end
 apply = function(piece, reason)
   if piece == nil or piece.url == nil then
     return
+  end
+  if wallpaperDir == nil then
+    return fail(noctalia.tr("error.data_dir"))
   end
   if data.applying then
     pendingApply = { piece = piece, reason = reason }
@@ -286,11 +297,13 @@ apply = function(piece, reason)
   end
 end
 
+-- Before today's set has loaded, fetch it and set today's piece once it lands.
 local function applyToday(reason)
   local today = data.pieces[1]
   if today ~= nil and today.isToday then
     apply(today, reason)
   else
+    pendingToday = reason
     refresh()
   end
 end
@@ -353,7 +366,9 @@ local function savePiece(piece)
   end
   saving = true
   data.lastError = ""
-  flash(noctalia.tr("saving", { name = piece.name }))
+  data.status = noctalia.tr("saving", { name = piece.name })
+  statusClearAt = 0
+  publish()
   local script = FETCH
     .. "set -e\n"
     .. "name=" .. sh(model.downloadName(piece)) .. "\n"
@@ -397,38 +412,11 @@ local function findPiece(id)
   return nil
 end
 
--- --------------------------------------------------------------- rotation
-
-local function setAutoRotate(value)
-  state.autoRotate = value
-  -- Turning rotation on starts a fresh period rather than firing at once
-  -- because the last change was long ago.
-  if value and state.lastSwitchAt == 0 then
-    state.lastSwitchAt = os.time()
-  end
-  persist()
-  publish()
-end
-
-local function setInterval(seconds)
-  state.intervalSeconds = model.clampInterval(seconds)
-  persist()
-  publish()
-end
-
-local function rotationDue()
-  return autoRotate() and not data.applying and not shuffling
-    and (state.lastSwitchAt == 0 or os.time() - state.lastSwitchAt >= interval())
-end
-
 function update()
   if statusClearAt > 0 and os.time() >= statusClearAt then
     statusClearAt = 0
     data.status = ""
     publish()
-  end
-  if rotationDue() then
-    shuffle("auto")
   end
 end
 
@@ -448,10 +436,6 @@ local function command(cmd)
     savePiece(findPiece(cmd.id))
   elseif op == "open" then
     openPage(findPiece(cmd.id) or state.current)
-  elseif op == "auto" then
-    setAutoRotate(cmd.value == nil and not autoRotate() or cmd.value == true)
-  elseif op == "interval" then
-    setInterval(cmd.seconds or model.nextInterval(interval()))
   end
 end
 
@@ -462,37 +446,21 @@ noctalia.state.watch("boringday.cmd", function(value)
   end
 end)
 
--- noctalia msg plugin johnschmidt/boringday:service all <event> [arg]
-function onIpc(event, payload)
-  local arg = type(payload) == "string" and noctalia.string.trim(payload) or ""
+-- noctalia msg plugin johnschmidt/boringday:service all <event>
+function onIpc(event, _payload)
   if event == "random" then
     shuffle("cli")
   elseif event == "today" then
     applyToday("cli")
   elseif event == "refresh" then
     refresh()
-  elseif event == "auto" then
-    if arg == "on" then setAutoRotate(true)
-    elseif arg == "off" then setAutoRotate(false)
-    else setAutoRotate(not autoRotate()) end
-  elseif event == "interval" and tonumber(arg) then
-    setInterval(tonumber(arg))
   end
-end
-
--- Editing the settings file is an explicit choice, so it wins over whatever
--- the panel toggled before it.
-function onConfigChanged()
-  state.autoRotate = nil
-  state.intervalSeconds = nil
-  persist()
-  publish()
 end
 
 local function init()
   dataDir = noctalia.pluginDataDir()
   if dataDir == nil then
-    data.lastError = noctalia.tr("error.set")
+    data.lastError = noctalia.tr("error.data_dir")
     publish()
     return
   end
@@ -503,7 +471,7 @@ local function init()
   noctalia.mkdirAll(thumbDir)
   local text = noctalia.readFile(statePath)
   if type(text) == "string" then
-    state = model.parseState(text, os.time())
+    state = model.parseState(text)
   end
   data.current = state.current
   publish()

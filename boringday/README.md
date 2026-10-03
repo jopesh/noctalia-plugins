@@ -2,7 +2,7 @@
 
 Hand-picked fine art from [anotherboring.day](https://anotherboring.day) as your
 wallpaper. A bar icon opens today's piece plus two more, one click sets any of
-them, and an optional schedule keeps the wall moving.
+them.
 
 A port of the Omarchy Quickshell plugin
 [`jopesh/omarchy-boringday`](https://github.com/jopesh/omarchy-boringday). Same
@@ -12,8 +12,8 @@ public endpoints, no account, no API key. Requires `curl`; `xdg-open` and
 ## Using it
 
 Click the bar icon to open the panel; right-click shuffles a random piece
-without opening anything, middle-click refetches today's set. The icon takes
-the accent color while rotation is on.
+without opening anything, middle-click refetches today's set. A shuffled piece
+joins the list in the panel, so what is on the wall is always one row away.
 
 Browsing the three rows previews a piece; the wallpaper only changes when you
 set it.
@@ -26,8 +26,6 @@ set it.
 | `d` | Save a copy to your pictures folder |
 | `o` | Open the piece's page on anotherboring.day |
 | `r` | Fetch today's set again |
-| `a` | Toggle automatic rotation |
-| `i` | Cycle the rotation period (1h / 3h / 12h / 24h) |
 
 ## From the command line
 
@@ -35,17 +33,16 @@ set it.
 noctalia msg plugin johnschmidt/boringday:service all random          # set a random piece
 noctalia msg plugin johnschmidt/boringday:service all today           # set today's piece
 noctalia msg plugin johnschmidt/boringday:service all refresh         # refetch today's set
-noctalia msg plugin johnschmidt/boringday:service all auto toggle     # on | off | toggle
-noctalia msg plugin johnschmidt/boringday:service all interval 1800   # seconds
 ```
+
+`today` fetches the set first if it has not loaded yet. Bind `random` to a
+timer (systemd, cron) if you want the wall to rotate on its own.
 
 ## Settings
 
-`auto_rotate`, `interval_seconds` (300–86400) and `notify` live in the plugin
-settings. The panel's toggle and interval chips are remembered by the service
-and override the settings file until the next time the settings are edited.
-The schedule is wall-clock: the last change is persisted, so a restart resumes
-it rather than granting a fresh period.
+`notify` (on by default) sends a notification naming the piece whenever the
+command line changes the wallpaper; changes made from the panel are not
+announced.
 
 ## How it works
 

@@ -7,6 +7,7 @@ local model = require("./model.luau")
 
 local data = noctalia.state.get("boringday.data") or {}
 local selected = 1
+local render
 
 local function pieces()
   return type(data.pieces) == "table" and data.pieces or {}
@@ -68,35 +69,7 @@ local function pieceRow(index, piece)
   })
 end
 
-local function rotation()
-  local chips = {}
-  local active = model.intervalIndex(data.intervalSeconds or 3600)
-  for i, seconds in ipairs(model.INTERVALS) do
-    table.insert(chips, ui.button({
-      key = "interval:" .. seconds,
-      text = (seconds // 3600) .. "h",
-      variant = "ghost",
-      controlSize = "sm",
-      selected = active == i - 1,
-      flexGrow = 1,
-      enabled = data.autoRotate == true,
-      tooltip = noctalia.tr("rotation.every", { period = model.everyLabel(seconds) }),
-      onClick = function() command("interval", { seconds = seconds }) end,
-    }))
-  end
-  return ui.column({ gap = 6 }, {
-    ui.row({ gap = 8, align = "center" }, {
-      ui.label({ text = noctalia.tr("rotation.label"), fontSize = 12, flexGrow = 1 }),
-      ui.toggle({
-        checked = data.autoRotate == true,
-        onChange = function(value) command("auto", { value = value }) end,
-      }),
-    }),
-    ui.row({ gap = 4, align = "center", padding = 3, radius = 8, fill = "on_surface_variant/0.10" }, chips),
-  })
-end
-
-local function render()
+render = function()
   local list = pieces()
   if selected > #list then
     selected = math.max(1, #list)
@@ -158,7 +131,6 @@ local function render()
         onClick = function() command("refresh") end,
       }),
     }),
-    rotation(),
   }
 
   panel.render(ui.scroll({ flexGrow = 1, padding = 12, gap = 10, align = "stretch" }, body))
@@ -191,10 +163,6 @@ function onKey(chord, pressed)
     command("open", { id = piece.id })
   elseif chord == "r" then
     command("refresh")
-  elseif chord == "a" then
-    command("auto")
-  elseif chord == "i" then
-    command("interval")
   end
 end
 
